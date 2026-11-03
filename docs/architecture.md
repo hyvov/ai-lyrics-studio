@@ -62,6 +62,12 @@ Job：id、type、project_id、segment_ids、status、stage、progress、error_c
 
 已实现 API：GET /api/session，GET/POST /api/projects，PUT /api/projects/{id}，POST /api/projects/{id}/assets/{kind}，POST /api/projects/{id}/lyrics，GET /api/projects/{id}/lyrics.lrc，GET /api/assets/{id}。
 
-服务仅监听回环地址，校验 Host、Origin 与写操作会话令牌；未启用跨域许可。界面与 API 同源。模型、后台任务与渲染版本状态机尚未实现，以上 API 草案中相应路径仍为规划。
+服务仅监听回环地址，校验 Host、Origin 与写操作会话令牌；未启用跨域许可。界面与 API 同源。模型任务、产物发布与版本校验已实现，实际路径见下方“当前模型实现”。
 
 波形由浏览器解码原唱/伴奏计算，80 MB 以上跳过波形计算。上传最大 512 MB。歌词时长以音频元数据为准，导入 LRC 不触发模型推理。播放对齐采用同时间起点与漂移修正，不能补偿源素材自身偏移。
+
+## 当前模型实现
+
+已新增 runtime.py（共享模型发现）、singing.py（输入校验/指纹）、model_worker.py（独立推理适配）、jobs.py（GPU 任务与发布）。POST /api/projects/{id}/renders 启动任务，GET /api/jobs/{id} 查询真实处理阶段，POST /api/jobs/{id}/cancel 取消任务；GET /api/runtime 显示模型文件状态；GET /api/projects/{id}/exports/{rendered|mixed} 导出有效且完整的产物。任务及运行依赖留在本机，不提交权重。
+
+任务一次只运行一个；编辑不阻塞，完成时对每句校验输入，避免覆盖新编辑。混合轨还校验工程级指纹，仍有修改句未生成时禁止完整音频导出。

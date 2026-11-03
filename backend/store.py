@@ -33,7 +33,7 @@ def validate_project(value: dict) -> dict:
         if not isinstance(line, dict):
             raise ValueError('歌词片段无效。')
         line_id = line.get('id')
-        if not isinstance(line_id, str) or not line_id or len(line_id) > 100 or line_id in seen:
+        if not isinstance(line_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', line_id) or line_id in seen:
             raise ValueError('歌词片段 ID 无效或重复。')
         seen.add(line_id)
         for key in ('text', 'original'):

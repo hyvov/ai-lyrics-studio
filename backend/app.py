@@ -13,6 +13,9 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from backend.store import Conflict, Store, export_lrc, parse_lrc
+from backend.jobs import RenderJobs
+from backend.singing import fingerprint, composition_fingerprint
+from contextlib import asynccontextmanager
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_AUDIO = 512 * 1024 * 1024
@@ -26,7 +29,23 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     assets = (data / 'assets').resolve()
     assets.mkdir(parents=True, exist_ok=True)
     token = secrets.token_urlsafe(32)
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    jobs = RenderJobs(store, assets, data / 'jobs')
+    @asynccontextmanager
+    async def lifespan(_):
+        yield
+        jobs.shutdown()
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+
+    def view(p):
+        for line in p['lines']:
+            take = p.get('renders', {}).get(line['id'])
+            valid = take and take['fingerprint'] == fingerprint(p, line)
+            line['render_state'] = 'ready' if valid else ('stale' if take else 'pending')
+            line['render_warning'] = ' '.join(take.get('warnings', [])) if valid else ''
+        composite = p.get('composite', {})
+        p['rendered_available'] = bool(composite.get('rendered') and composite.get('fingerprint') == composition_fingerprint(p))
+        p['render_complete'] = all(x['text'] == x['original'] or x['render_state'] == 'ready' for x in p['lines'])
+        return p
 
     @app.middleware('http')
     async def protect(request: Request, call_next):
@@ -77,19 +96,19 @@ def create_app(data_root: Path | None = None) -> FastAPI:
 
     @app.get('/api/session')
     def session():
-        return {'token': token, 'capabilities': {'storage': True, 'inference': False}}
+        return {'token': token, 'capabilities': {'storage': True, 'inference': jobs.runtime.status()['ready']}}
 
     @app.get('/api/projects')
     def projects():
-        return store.list()
+        return [view(p) for p in store.list()]
 
     @app.post('/api/projects', status_code=201)
     async def create(request: Request):
-        return store.create(await body(request))
+        return view(store.create(await body(request)))
 
     @app.put('/api/projects/{project_id}')
     async def update(project_id: str, request: Request):
-        return store.update(project_id, await body(request))
+        return view(store.update(project_id, await body(request)))
 
     @app.post('/api/projects/{project_id}/lyrics')
     async def lyrics(project_id: str, request: Request):
@@ -99,7 +118,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             raise ValueError('请提供 LRC 文本。')
         p['lines'] = parse_lrc(value['text'], p['duration'])
         p['revision'] = value.get('revision')
-        return store.update(project_id, p)
+        return view(store.update(project_id, p))
 
     @app.get('/api/projects/{project_id}/lyrics.lrc')
     def export(project_id: str):
@@ -138,12 +157,47 @@ def create_app(data_root: Path | None = None) -> FastAPI:
                 raise ValueError('音频文件为空。')
             temporary.replace(target)
             try:
-                return store.attach(project_id, kind, {'id': asset_id, 'name': name, 'duration': duration}, revision, duration if kind == 'source' else None)
+                return view(store.attach(project_id, kind, {'id': asset_id, 'name': name, 'duration': duration}, revision, duration if kind == 'source' else None))
             except Exception:
                 target.unlink(missing_ok=True)
                 raise
         finally:
             temporary.unlink(missing_ok=True)
+
+    @app.get('/api/runtime')
+    def runtime():
+        with jobs.lock:
+            active = jobs.get(jobs.active) if jobs.active else None
+        return {**jobs.runtime.status(), 'active_job': active}
+
+    @app.get('/api/projects/{project_id}')
+    def get_project(project_id: str):
+        return view(store.get(project_id))
+
+    @app.post('/api/projects/{project_id}/renders', status_code=202)
+    async def render(project_id: str, request: Request):
+        value = await body(request)
+        return jobs.submit(project_id, value.get('revision'), value.get('segment_ids'))
+
+    @app.get('/api/jobs/{job_id}')
+    def get_job(job_id: str):
+        return jobs.get(job_id)
+
+    @app.post('/api/jobs/{job_id}/cancel')
+    def cancel_job(job_id: str):
+        return jobs.cancel(job_id)
+
+    @app.get('/api/projects/{project_id}/exports/{kind}')
+    def export_audio(project_id: str, kind: str):
+        if kind not in ('rendered', 'mixed'):
+            raise ValueError('请选择演唱干声或混音。')
+        p = view(store.get(project_id))
+        if not p['rendered_available'] or not p['render_complete']:
+            raise Conflict('仍有改词句未生成或音频已过期，请先完成生成。')
+        asset_id = p['composite'].get(kind)
+        if not asset_id:
+            raise ValueError('当前没有该导出文件，混音需要先导入伴奏再生成。')
+        return FileResponse(assets / asset_id, filename=kind + '.wav', media_type='audio/wav')
 
     @app.get('/api/assets/{asset_id}')
     def media(asset_id: str):
