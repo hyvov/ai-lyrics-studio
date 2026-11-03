@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from backend.store import Conflict, Store, export_lrc, export_srt, parse_lyrics
+from backend.store import Conflict, Store, export_lrc, export_srt, parse_lyrics,snapshot_lyrics,validate_project
 from backend.jobs import RenderJobs
 from backend.media import source_issue
 from backend.singing import fingerprint, composition_fingerprint, svc_fingerprint, units
@@ -40,6 +40,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
     def view(p):
+        p.pop('lyric_history',None)
         p['source_issue'] = source_issue(p, assets)
         for line in p['lines']:
             alignment = cached_alignment(p,line)
@@ -130,9 +131,32 @@ def create_app(data_root: Path | None = None) -> FastAPI:
         p = store.get(project_id)
         if not isinstance(value.get('text'), str):
             raise ValueError('请提供 SRT 或 LRC 文本。')
-        p['lines'] = parse_lyrics(value['text'], p['duration'], value.get('format'))
-        p['revision'] = value.get('revision')
-        return view(store.update(project_id, p))
+        lines = parse_lyrics(value['text'], p['duration'], value.get('format'))
+        return view(store.replace_lyrics(project_id,value.get('revision'),lines,'导入字幕或歌词前'))
+
+    @app.get('/api/projects/{project_id}/lyric-history')
+    def lyric_history(project_id: str):
+        p=store.get(project_id);source=p.get('assets',{}).get('source',{}).get('id')
+        return {'history':[{'id':x['id'],'created_at':x['created_at'],'reason':x['reason'],
+            'count':len(x['lines']),'preview':' / '.join(line['text'] for line in x['lines'][:2]),
+            'compatible':x.get('source_id')==source} for x in reversed(p.get('lyric_history',[]))]}
+
+    @app.post('/api/projects/{project_id}/lyric-history/{snapshot_id}/restore')
+    async def restore_lyrics(project_id: str,snapshot_id: str,request: Request):
+        value=await body(request)
+        with jobs.lock,store.lock:
+            if jobs.active:raise Conflict('当前有任务运行，请等待完成或取消后再恢复。')
+            p=store.get(project_id)
+            if type(value.get('revision')) is not int or value['revision']!=p['revision']:
+                raise Conflict('工程已更新，请刷新后再恢复歌词。')
+            saved=next((x for x in p.get('lyric_history',[]) if x['id']==snapshot_id),None)
+            if not saved:raise FileNotFoundError()
+            if saved.get('source_id')!=p.get('assets',{}).get('source',{}).get('id'):
+                raise Conflict('该版本对应的原唱音频已更换，不能直接恢复。')
+            validate_project({**p,'lines':saved['lines']})
+            snapshot_lyrics(p,'恢复历史歌词前')
+            p['lines']=saved['lines'];p['revision']+=1
+            return view(store._write(p))
 
     @app.get('/api/projects/{project_id}/lyrics.lrc')
     def export(project_id: str):
@@ -144,7 +168,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
 
     @app.post('/api/projects/{project_id}/assets/{kind}')
     async def upload(project_id: str, kind: str, request: Request):
-        if kind not in ('source', 'accompaniment', 'song', 'reference'):
+        if kind not in ('source', 'accompaniment', 'song', 'reference', 'reference_pending'):
             raise ValueError('无效的轨道类型。')
         store.get(project_id)
         name = request.headers.get('x-file-name', '')

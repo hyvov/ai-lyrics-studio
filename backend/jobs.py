@@ -15,7 +15,7 @@ from backend.runtime import ROOT, Runtime
 from backend.media import source_issue
 from backend.singing import composition_fingerprint, fingerprint, svc_fingerprint, validate_render, validate_alignment
 from backend.timeline import alignment_fingerprint, cached_alignment, validate_timings
-from backend.store import Conflict
+from backend.store import Conflict,snapshot_lyrics
 
 TERMINAL = {'succeeded', 'failed', 'cancelled', 'interrupted', 'stale'}
 
@@ -142,7 +142,7 @@ class RenderJobs:
             p=self.store.get(project_id)
             if type(revision) is not int or revision!=p['revision']:raise Conflict('工程已更新，请刷新后再试。')
             if target_kind not in ('source','rendered'):raise ValueError('请选择原唱或改词演唱作为转换目标。')
-            ref=p.get('assets',{}).get('reference');source=p.get('assets',{}).get('source')
+            ref=p.get('assets',{}).get('reference_pending') or p.get('assets',{}).get('reference');source=p.get('assets',{}).get('source')
             if not ref or not source:raise ValueError('请先导入目标人声和参考人声。')
             issue=source_issue(p,self.assets)
             if issue:raise ValueError(issue)
@@ -271,13 +271,16 @@ class RenderJobs:
         target_kind=job['target_kind']
         with self.store.lock:
             current=self.store.get(snapshot['id'])
-            if svc_fingerprint(current,target_kind)!=svc_fingerprint(snapshot,target_kind):
+            if (svc_fingerprint(current,target_kind)!=svc_fingerprint(snapshot,target_kind)
+                    or current.get('assets',{}).get('reference_pending')!=snapshot.get('assets',{}).get('reference_pending')):
                 self._set(job,status='stale',error='转换期间参考音频或目标音频已改变，旧结果未覆盖。');return
             path=directory/'svc.wav'
             if not path.is_file() or path.stat().st_size<=44:raise ValueError('音色转换结果不完整。')
             asset_id=uuid4().hex+'.wav';created=[]
             try:
                 shutil.copyfile(path,self.assets/asset_id);created.append(asset_id)
+                pending=current.get('assets',{}).pop('reference_pending',None)
+                if pending:current['assets']['reference']=pending
                 current['svc']={'asset_id':asset_id,'target_kind':target_kind,'fingerprint':svc_fingerprint(current,target_kind)}
                 old_backing=snapshot.get('assets',{}).get('accompaniment')
                 mix_path=directory/'svc-mixed.wav'
@@ -300,6 +303,7 @@ class RenderJobs:
                 self._set(job,status='stale',error='识词期间原唱或歌词已改变，结果未覆盖当前工程。');return
             lines=[dict(id=uuid4().hex,original=x['text'],text=x['text'],start=x['start'],end=x['end'],mode='melody',restore=False,needs_review=True) for x in drafts]
             validate_project({**current,'lines':lines})
+            snapshot_lyrics(current,'自动识词前')
             current['lines']=lines;current['revision']+=1;self.store._write(current)
             self._set(job,status='succeeded',stage='complete',accepted=len(lines))
 

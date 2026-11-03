@@ -2,16 +2,26 @@
 from __future__ import annotations
 
 import json
+import copy
 import math
 import os
 import re
 import threading
+import time
 from pathlib import Path
 from uuid import uuid4
 
 
 class Conflict(Exception):
     pass
+
+
+def snapshot_lyrics(project: dict, reason: str):
+    if not project.get('lines'):return
+    project.setdefault('lyric_history',[]).append({
+        'id':uuid4().hex,'created_at':time.time(),'reason':reason,
+        'source_id':project.get('assets',{}).get('source',{}).get('id'),
+        'lines':copy.deepcopy(project['lines'])})
 
 
 def validate_project(value: dict) -> dict:
@@ -93,6 +103,16 @@ class Store:
             changes = validate_project(value)
             # Audio resources are assigned exclusively by the upload endpoint.
             current.update(changes, revision=current['revision'] + 1)
+            return self._write(current)
+
+    def replace_lyrics(self, project_id: str, revision: int, lines: list, reason: str) -> dict:
+        with self.lock:
+            current=self.get(project_id)
+            if type(revision) is not int or revision!=current['revision']:
+                raise Conflict('工程已更新，请刷新后再试。')
+            validate_project({**current,'lines':lines})
+            snapshot_lyrics(current,reason)
+            current['lines']=lines;current['revision']+=1
             return self._write(current)
 
     def attach(self, project_id: str, kind: str, asset: dict, revision: int, duration: float | None = None) -> dict:

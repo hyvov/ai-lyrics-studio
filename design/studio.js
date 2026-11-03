@@ -108,6 +108,7 @@ function render() {
   $('batchAlign').disabled = !unaligned || !!activeJob || !modelReady || !p?.assets.source || !!p?.source_issue;
   $('batchAlign').title = p?.source_issue || '批量提取未对齐的逐字时间；已有时间不会被覆盖';
   $('transcribe').disabled = !p?.assets.source || !!activeJob || !!p?.source_issue;
+  $('lyricHistory').disabled = !p || !!activeJob;
   $('batch').textContent = '生成 ' + pending + ' 句'; $('batch').disabled = !pending || !!activeJob || !modelReady || !!p?.source_issue;
   $('batch').title = p?.source_issue || '';
   $('versionRendered').disabled = !p?.rendered_available;
@@ -378,13 +379,43 @@ $('batchAlign').onclick = () => {
 };
 $('transcribe').onclick = () => {
   const p=project();if(!p?.assets.source)return;
-  if(p.lines.length&&!confirm('自动识词将替换本工程现有歌词和改词编辑。请确认已备份或导出歌词，是否继续？'))return;
+  if(p.lines.length&&!confirm('自动识词将替换当前歌词；原有内容会保存在历史歌词中。是否继续？'))return;
   mutate(async()=>{
     activeJob=await api('projects/'+p.id+'/transcription',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({revision:p.revision,replace:!!p.lines.length})});
     render();pollJob();
   });
 };
+$('lyricHistory').onclick=async()=>{
+  const p=project();if(!p)return;
+  try{
+    const result=await api('projects/'+p.id+'/lyric-history');
+    if(project()?.id!==p.id)return;
+    const list=$('lyricHistoryList');list.replaceChildren();
+    if(!result.history.length){const empty=document.createElement('p');empty.className='muted';empty.textContent='还没有可恢复的历史歌词。';list.append(empty);}
+    result.history.forEach(item=>{
+      const row=document.createElement('div');row.className='lyric-history-row';
+      const detail=document.createElement('div'),title=document.createElement('strong'),preview=document.createElement('p');
+      title.textContent=item.reason+' · '+new Date(item.created_at*1000).toLocaleString('zh-CN');
+      preview.className='muted tiny';preview.textContent=item.count+' 句 · '+item.preview+(item.compatible?'':' · 原唱已更换，不能直接恢复');
+      detail.append(title,preview);
+      const restore=document.createElement('button');restore.textContent='恢复此版本';restore.disabled=!item.compatible||!!activeJob;
+      restore.onclick=()=>{
+        if(!confirm('恢复此版本将替换当前歌词；当前内容也会保存到历史中。是否继续？'))return;
+        mutate(async()=>{
+          const current=project();
+          const updated=await api('projects/'+current.id+'/lyric-history/'+item.id+'/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:current.revision})});
+          selected=0;replaceProject(updated);$('lyricHistoryDialog').close();loadAudio();
+          if(!updated.rendered_available && updated.lines.some(x=>x.render_state==='ready')){await startCompose();toast('歌词已恢复，正在重建可用的演唱。');}
+          else toast('历史歌词已恢复，恢复前的内容仍保存在历史中。');
+        });
+      };
+      row.append(detail,restore);list.append(row);
+    });
+    $('lyricHistoryDialog').showModal();
+  }catch(error){toast(error.message);}
+};
+$('closeLyricHistory').onclick=()=>$('lyricHistoryDialog').close();
 
 $('theme').onclick = () => { const dark = document.body.classList.toggle('dark'); $('theme').textContent = dark ? '☀ 白天' : '☾ 夜间'; };
 document.querySelectorAll('[data-info]').forEach(b => b.onclick = () => toast(b.dataset.info));
@@ -420,7 +451,7 @@ $('startSvc').onclick = () => {
   if(activeJob){toast('当前模型任务尚未完成。');return;}
   svcTargetKind=activeVoice==='rendered'?'rendered':'source';
   toast('请选择 1–30 秒清晰参考人声，将转换当前'+(svcTargetKind==='rendered'?'改词演唱':'原唱人声')+'。');
-  chooseAudio('reference');
+  chooseAudio('reference_pending');
 };
 $('importSource').onclick = () => chooseAudio('source'); $('importAccompaniment').onclick = () => chooseAudio('accompaniment');
 async function audioDuration(file) {
@@ -438,7 +469,7 @@ $('audioFile').onchange = () => {
   mutate(async () => {
     if (file.size > 512 * 1024 * 1024) throw new Error('文件不能超过 512 MB。');
     const seconds = await audioDuration(file), p = project();
-    if(importKind==='reference' && (seconds<1 || seconds>30))throw new Error('参考人声需要 1–30 秒，请裁剪后重试。');
+    if(importKind==='reference_pending' && (seconds<1 || seconds>30))throw new Error('参考人声需要 1–30 秒，请裁剪后重试。');
     if ((importKind === 'source' || importKind === 'song') && p.lines.some(x => x.end > seconds + .001)) throw new Error('新音频比已有歌词短，请创建新工程导入，避免损坏时间轴。');
     const updated = await api('projects/' + p.id + '/assets/' + importKind, {method: 'POST', headers: {
       'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name), 'X-Project-Revision': String(p.revision), 'X-Audio-Duration': String(seconds)}, body: file});
@@ -446,7 +477,7 @@ $('audioFile').onchange = () => {
     if(importKind === 'song') {
       activeJob=await api('projects/'+updated.id+'/separation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:updated.revision})});
       render(); pollJob(); toast('歌曲已导入，正在分离人声和伴奏。');
-    } else if(importKind==='reference') {
+    } else if(importKind==='reference_pending') {
       activeJob=await api('projects/'+updated.id+'/svc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:updated.revision,target_kind:svcTargetKind})});
       render();pollJob();toast('参考人声已导入，正在转换音色。');
     } else {
@@ -460,7 +491,7 @@ $('audioFile').onchange = () => {
 $('importLyrics').onclick = () => { if (busy || !project()) return; if (!project().assets.source) { toast('请先导入原唱音频，以确定时间轴长度。'); return; } $('lyricsFile').value = ''; $('lyricsFile').click(); };
 $('lyricsFile').onchange = () => {
   const file = $('lyricsFile').files[0]; if (!file) return;
-  if (project().lines.length && !confirm('导入字幕或歌词会替换本工程的全部歌词编辑，是否继续？')) return;
+  if (project().lines.length && !confirm('导入字幕或歌词会替换当前歌词；原有内容会保存在历史歌词中。是否继续？')) return;
   mutate(async () => {
     if (file.size > 2 * 1024 * 1024) throw new Error('字幕或歌词文件不能超过 2 MB。');
     const format = file.name.match(/\.(srt|lrc)$/i)?.[1]?.toLowerCase() || 'auto';

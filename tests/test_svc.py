@@ -57,5 +57,25 @@ class SvcTests(unittest.TestCase):
             self.assertTrue(p['svc_available']);self.assertFalse(p['svc_mixed_available'])
             self.assertEqual(c.get(f"/api/projects/{self.p['id']}/exports/svc_mixed").status_code,409)
 
+    def test_staged_reference_keeps_old_svc_until_new_result_publishes(self):
+        old_id='f'*32+'.wav';(self.assets/old_id).write_bytes(b'z'*100)
+        self.p['svc']={'asset_id':old_id,'target_kind':'source','fingerprint':svc_fingerprint(self.p,'source')}
+        self.p['assets']['reference_pending']={'id':'pending.wav','duration':5};self.store._write(self.p)
+        with TestClient(create_app(self.root),base_url='http://127.0.0.1:18733') as c:
+            self.assertTrue(c.get(f"/api/projects/{self.p['id']}").json()['svc_available'])
+            self.jobs._publish_svc(self.job,copy.deepcopy(self.p),self.dir)
+            saved=c.get(f"/api/projects/{self.p['id']}").json()
+            self.assertTrue(saved['svc_available']);self.assertNotEqual(saved['svc']['asset_id'],old_id)
+            self.assertEqual(saved['assets']['reference']['id'],'pending.wav')
+            self.assertNotIn('reference_pending',saved['assets'])
+
+    def test_newer_staged_reference_prevents_old_job_from_publishing(self):
+        self.p['assets']['reference_pending']={'id':'first.wav','duration':5};self.store._write(self.p)
+        snapshot=copy.deepcopy(self.p)
+        self.p['assets']['reference_pending']={'id':'second.wav','duration':5};self.store._write(self.p)
+        self.jobs._publish_svc(self.job,snapshot,self.dir)
+        self.assertEqual(self.job['status'],'stale')
+        self.assertEqual(self.store.get(self.p['id'])['assets']['reference_pending']['id'],'second.wav')
+
 
 if __name__=='__main__':unittest.main()
