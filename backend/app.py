@@ -51,6 +51,9 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             valid = take and take['fingerprint'] == fingerprint(p, line)
             line['render_state'] = 'ready' if valid else ('stale' if take else 'pending')
             line['render_warning'] = ' '.join(take.get('warnings', [])) if valid else ''
+            line['render_legacy'] = bool(valid and line['text'] != line['original'] and not take.get('reference_safe'))
+            if line['render_legacy']:
+                line['render_warning'] = '旧版参考音频可能导致原词残留，请重新生成。'
         composite = p.get('composite', {})
         p['rendered_available'] = bool(composite.get('rendered') and composite.get('fingerprint') == composition_fingerprint(p))
         svc=p.get('svc',{})

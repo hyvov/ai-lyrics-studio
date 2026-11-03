@@ -79,6 +79,23 @@ class RenderJobs:
                       'existing_takes': [], 'hfa': self.runtime.hfa_config(), 'operation':kind,
                       'saved_alignments':{x['id']:cached_alignment(p,x) for x in selected if kind == 'render' and cached_alignment(p,x)},
                       'svc':svc_config}
+            if kind == 'render':
+                references = {}
+                for line in selected:
+                    candidates = [other for other in p['lines'] if other['id'] != line['id']
+                                  and (other['end'] <= line['start'] or other['start'] >= line['end'])
+                                  and 1 <= other['end'] - other['start'] <= 20
+                                  and other['original'].strip() and other['original'] != line['original']]
+                    if candidates:
+                        reference = min(candidates, key=lambda other: abs(other['start'] - line['start']))
+                        references[line['id']] = reference['id']
+                ids = set(references.values()) - {line['id'] for line in selected}
+                config['reference_segments'] = [dict(line, text=line['original'], restore=False)
+                                                for line in p['lines'] if line['id'] in ids]
+                config['references'] = references
+                for line in config['reference_segments']:
+                    cached = cached_alignment(p, line)
+                    if cached: config['saved_alignments'][line['id']] = cached
             if p['assets'].get('accompaniment'):
                 config['accompaniment'] = str((self.assets / p['assets']['accompaniment']['id']).resolve())
             for line in p['lines']:
@@ -392,7 +409,8 @@ class RenderJobs:
                         raise ValueError('生成产物路径或文件异常。')
                     asset_id = uuid4().hex + '.wav'
                     shutil.copyfile(src, self.assets / asset_id); created.append(asset_id)
-                    take = {'asset_id': asset_id, 'fingerprint': fingerprint(snapshot, line), 'job_id': job['id'], 'warnings': list(job['warnings'])}
+                    take = {'asset_id': asset_id, 'fingerprint': fingerprint(snapshot, line), 'job_id': job['id'], 'warnings': list(job['warnings']),
+                            'reference_safe': output.get('reference_safe') is True}
                     current.setdefault('renders', {})[line['id']] = take
                     current.setdefault('render_history', []).append({'segment_id': line['id'], **take,
                         'created_at':job.get('created_at'),

@@ -108,6 +108,34 @@ def align_words(aligner, waveform, text, sr, diagnostic_path=None):
     return words, spans, indices
 
 
+def mask_changed_reference(prompt, original, replacement, waveform, sr):
+    """Remove edited syllables from a same-phrase timbre reference."""
+    import numpy as np
+    before, after = units(original), units(replacement)
+    changed = {i for i, (a, b) in enumerate(zip(before, after)) if a.lower() != b.lower()}
+    if len(before) != len(after) or not changed or len(changed) == len(before):
+        raise ValueError('没有可用的独立音色参考句；请导入包含其他唱句的歌词和原唱。')
+    result = copy.deepcopy(prompt)
+    words = result['text'].split(); durations = [float(x) for x in result['duration'].split()]
+    pitches = result['note_pitch'].split(); types = result['note_type'].split()
+    samples = waveform.copy(); slot = -1; cursor = 0.; ranges = []
+    for i, (word, duration, kind) in enumerate(zip(words, durations, types)):
+        if word != '<SP>' and kind == '2': slot += 1
+        if word != '<SP>' and slot in changed:
+            ranges.append((max(0., cursor-.025), min(len(samples)/sr, cursor+duration+.035)))
+            words[i], pitches[i], types[i] = '<SP>', '0', '1'
+        cursor += duration
+    if slot + 1 != len(before): raise ValueError('音色参考的音符与歌词不一致。')
+    for start, end in ranges: samples[round(start*sr):round(end*sr)] = 0
+    f0 = [float(x) for x in result['f0'].split()]
+    for i in range(len(f0)):
+        if any(start <= i * cursor / max(1,len(f0)-1) <= end for start,end in ranges): f0[i] = 0.
+    from preprocess.tools.g2p import g2p_transform
+    result.update(text=' '.join(words), phoneme=' '.join(g2p_transform(words,'Mandarin')),
+                  note_pitch=' '.join(pitches), note_type=' '.join(types), f0=' '.join(map(str,f0)))
+    return result, samples
+
+
 def run(config):
     import numpy as np
     import librosa
@@ -125,6 +153,8 @@ def run(config):
     # next to the source asset or into the shared installed model directory.
     audio, sr = librosa.load(config['source'], sr=24000, mono=True)
     segments = config['segments']
+    target_ids = {line['id'] for line in segments}
+    analysis_segments = segments + config.get('reference_segments', [])
     prepared = []
     hfa, qwen = None, None
     timing_results = []
@@ -134,7 +164,7 @@ def run(config):
             hfa = HfaAligner(config['hfa'])
         except Exception as exc:
             report('alignment_warning', message='歌声对齐组件不可用，改用备用对齐：' + str(exc))
-    for position, line in enumerate(segments, 1):
+    for position, line in enumerate(analysis_segments, 1):
         crop = audio[round(line['start'] * sr):round(line['end'] * sr)]
         if len(crop) < round(sr * .12)-1 or np.max(np.abs(crop)) < .001:
             raise ValueError('当前句音频过短或接近静音，请调整边界。')
@@ -167,7 +197,8 @@ def run(config):
             if index is not None:
                 unit_timings.append({'text':word,'start':round(cursor,6),'end':round(cursor+span,6)})
             cursor += span
-        timing_results.append({'segment_id':line['id'],'engine':engine,'unit_timings':saved['unit_timings'] if saved and engine == 'manual' else unit_timings})
+        if line['id'] in target_ids:
+            timing_results.append({'segment_id':line['id'],'engine':engine,'unit_timings':saved['unit_timings'] if saved and engine == 'manual' else unit_timings})
         path = jobdir / (line['id'] + '-reference.wav')
         sf.write(path, crop, sr)
         prepared.append((line, path, crop, words, spans, indices))
@@ -247,9 +278,20 @@ def run(config):
     model = build_model(str(models / 'SoulX-Singer/model.pt'), cfg, device=device, use_fp16=True)
     processor = DataProcessor(cfg.audio.hop_size, cfg.audio.sample_rate, str(core / 'soulxsinger/utils/phoneme/phone_set.json'), device=device)
     outputs = []
+    by_id = {line['id']: (path, prompt) for line, path, prompt, _ in metadata}
+    metadata = [entry for entry in metadata if entry[0]['id'] in target_ids]
     for i, (line, path, prompt, target) in enumerate(metadata):
         report('generating', segment_id=line['id'], position=i + 1, total=len(metadata))
-        inputs = {'prompt': processor.process(copy.deepcopy(prompt), str(path)), 'target': processor.process(copy.deepcopy(target), None)}
+        ref_id = config.get('references', {}).get(line['id'])
+        if ref_id in by_id:
+            prompt_path, prompt = by_id[ref_id]
+        else:
+            samples, _ = sf.read(path, dtype='float32')
+            prompt, samples = mask_changed_reference(prompt, line['original'], line['text'], samples, sr)
+            prompt_path = jobdir / (line['id'] + '-masked-reference.wav')
+            sf.write(prompt_path, samples, sr)
+            report('alignment_warning', message='未找到独立参考句，已遮盖原句中改动的字，请试听确认。')
+        inputs = {'prompt': processor.process(copy.deepcopy(prompt), str(prompt_path)), 'target': processor.process(copy.deepcopy(target), None)}
         with torch.inference_mode():
             generated = model.infer(inputs, auto_shift=False, pitch_shift=0, n_steps=32, cfg=3,
                                     control=line['mode'], use_fp16=True).squeeze().float().cpu().numpy()
@@ -259,7 +301,7 @@ def run(config):
         generated = np.pad(generated[:required], (0, max(0, required - len(generated))))
         output = jobdir / (line['id'] + '-generated.wav')
         sf.write(output, generated, sr, subtype='PCM_16')
-        outputs.append({'segment_id': line['id'], 'path': str(output), 'sample_rate': sr, 'frames': required})
+        outputs.append({'segment_id': line['id'], 'path': str(output), 'sample_rate': sr, 'frames': required, 'reference_safe': True})
     if any(line.get('restore') for line,_,_,_ in metadata):
         import shutil
         from backend.svc_worker import run as convert_voice
