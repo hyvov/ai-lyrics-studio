@@ -102,6 +102,8 @@ class RenderJobs:
                 take = p.get('renders', {}).get(line['id'])
                 if line['id'] not in segment_ids and take and take['fingerprint'] == fingerprint(p, line):
                     config['existing_takes'].append({'start': line['start'], 'end': line['end'], 'path': str((self.assets / take['asset_id']).resolve())})
+            job['reuse_count'] = len(config['existing_takes'])
+            self._persist(job)
             (directory / 'input.json').write_text(json.dumps(config, ensure_ascii=False), encoding='utf-8')
             threading.Thread(target=self._run, args=(job, copy.deepcopy(p)), daemon=True).start()
             return copy.deepcopy(job)

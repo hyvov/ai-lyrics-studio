@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 from backend.singing import repair_score_pitches
 
 from backend.jobs import RenderJobs
@@ -89,6 +90,22 @@ class SingingTests(unittest.TestCase):
         self.assertEqual(current['renders']['line1']['fingerprint'],fingerprint(current,current['lines'][0]))
         self.assertTrue((self.assets/current['composite']['rendered']).exists())
         self.assertEqual(current['composite']['fingerprint'],composition_fingerprint(current))
+
+    def test_generating_one_phrase_reuses_other_valid_takes(self):
+        self.p['duration'] = 8
+        self.p['lines'].append({'id':'line2','original':'你好','text':'你早','start':4.,'end':8.,'mode':'melody','restore':False})
+        self.p['renders'] = {'line1': {'asset_id':'first.wav','fingerprint':fingerprint(self.p,self.p['lines'][0])}}
+        self.store._write(self.p)
+        runtime = MagicMock(); runtime.core = self.root; runtime.models = self.root
+        runtime.hfa_config.return_value = None
+        self.jobs.runtime = runtime
+        with patch('backend.jobs.source_issue', return_value=None), patch('backend.jobs.threading.Thread'):
+            job = self.jobs.submit(self.p['id'], self.p['revision'], ['line2'])
+        config = json.loads((self.jobs.root/job['id']/'input.json').read_text(encoding='utf-8'))
+        self.assertEqual([x['id'] for x in config['segments']], ['line2'])
+        self.assertEqual(job['reuse_count'], 1)
+        self.assertEqual(Path(config['existing_takes'][0]['path']).name, 'first.wav')
+        self.assertEqual(self.store.get(self.p['id'])['renders']['line1']['asset_id'], 'first.wav')
 
     def test_stale_output_does_not_replace_new_edit(self):
         job,directory=self.result(); snapshot=copy.deepcopy(self.p)

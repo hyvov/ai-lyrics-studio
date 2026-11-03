@@ -108,15 +108,15 @@ function render() {
     const edit = document.createElement('button'); edit.className = 'edit-button'; edit.textContent = '♧ 改词'; edit.onclick = () => openEdit(i);
     copy.append(words, original, state); row.append(copy, edit); $('lyricsList').append(row);
   }
-  const pending = p?.lines.filter(x => changed(x) && (x.render_state !== 'ready' || x.render_legacy)).length || 0;
+  const pending = p?.lines.filter(x => changed(x) && x.render_state !== 'ready').length || 0;
   const unaligned = p?.lines.filter(x => x.alignment_state !== 'ready').length || 0;
   $('batchAlign').textContent = '提取未对齐歌词 ' + unaligned + ' 句';
   $('batchAlign').disabled = !unaligned || !!activeJob || !modelReady || !p?.assets.source || !!p?.source_issue;
   $('batchAlign').title = p?.source_issue || '批量提取未对齐的逐字时间；已有时间不会被覆盖';
   $('transcribe').disabled = !p?.assets.source || !!activeJob || !!p?.source_issue;
   $('lyricHistory').disabled = !p || !!activeJob;
-  $('batch').textContent = '生成 ' + pending + ' 句'; $('batch').disabled = !pending || !!activeJob || !modelReady || !!p?.source_issue;
-  $('batch').title = p?.source_issue || '';
+  $('batch').textContent = '生成待处理 ' + pending + ' 句'; $('batch').disabled = !pending || !!activeJob || !modelReady || !!p?.source_issue;
+  $('batch').title = p?.source_issue || '仅生成待处理的改词，已生成的唱句直接复用；可在单句编辑中手动重新生成。';
   $('versionRendered').disabled = !p?.rendered_available;
   $('versionSvc').disabled = $('exportSvc').disabled = !p?.svc_available;
   $('exportSvcMix').disabled = !p?.svc_mixed_available;
@@ -396,7 +396,7 @@ $('regenerate').onclick = () => {
     await startRender([line.id]);
   });
 };
-$('batch').onclick = () => mutate(() => startRender(project().lines.filter(x => changed(x) && (x.render_state !== 'ready' || x.render_legacy)).map(x => x.id)));
+$('batch').onclick = () => mutate(() => startRender(project().lines.filter(x => changed(x) && x.render_state !== 'ready').map(x => x.id)));
 $('recompose').onclick=()=>mutate(()=>startCompose());
 async function startCompose() {
   const p=project();
@@ -755,7 +755,9 @@ async function pollJob() {
     $('cancelJob').textContent = job.kind === 'align' ? '取消对齐' : job.kind === 'separate' ? '取消分离' : job.kind === 'transcribe' ? '取消识词' : job.kind === 'svc' ? '取消音色转换' : job.kind === 'compose' ? '取消混音' : '取消生成';
     $('jobStage').textContent = STAGES[job.stage] || job.stage;
     if ($('timelineEditor').open && !timelineDirty && !['succeeded','failed','cancelled','interrupted','stale'].includes(job.status)) $('timelineHint').textContent='正在'+(STAGES[job.stage]||job.stage)+'…';
-    $('jobDetail').textContent = (job.position ? ' · 第 ' + job.position + ' / ' + job.total + ' 句' : '') + ' · 模型进程独立运行';
+    $('jobDetail').textContent = job.kind === 'render'
+      ? ' · 本次生成 ' + job.segment_ids.length + ' 句，复用 ' + (job.reuse_count || 0) + ' 句' + (job.stage === 'generating' && job.position ? ' · 第 ' + job.position + ' / ' + job.total + ' 句' : '')
+      : (job.position ? ' · 第 ' + job.position + ' / ' + job.total + ' 句' : '') + ' · 模型进程独立运行';
     if (['succeeded','failed','cancelled','interrupted','stale'].includes(job.status)) {
       const latest = await api('projects/' + job.project_id);
       activeJob = null; panel.hidden = true;
