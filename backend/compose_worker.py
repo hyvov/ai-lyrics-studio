@@ -4,6 +4,9 @@ import json
 import sys
 import traceback
 from pathlib import Path
+ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
+from backend.audio_compose import match_vocal_level
 
 
 def report(stage,**data):
@@ -24,6 +27,7 @@ def run(config):
         a,b=round(take['start']*sr),min(len(merged),round(take['end']*sr))
         if a<0 or a>=b:raise ValueError('演唱片段时间超出原唱音频。')
         clip=np.pad(clip[:b-a],(0,max(0,b-a-len(clip))))
+        clip=match_vocal_level(clip,merged[a:b],sr)
         fade=min(round(.01*sr),len(clip)//4);envelope=np.ones(len(clip),dtype=np.float32)
         if fade:
             envelope[:fade]=np.linspace(0,1,fade);envelope[-fade:]=np.linspace(1,0,fade)

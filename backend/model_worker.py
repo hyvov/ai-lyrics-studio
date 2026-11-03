@@ -20,6 +20,7 @@ os.environ.setdefault('MPLBACKEND', 'Agg')
 os.environ.setdefault('MPLCONFIGDIR', str(ROOT / 'runtime/matplotlib-cache'))
 from backend.singing import units, repair_alignment, repair_score_pitches
 from backend.timeline import timings_to_slots
+from backend.audio_compose import match_vocal_level
 
 
 def report(stage, **data):
@@ -288,6 +289,7 @@ def run(config):
             raise ValueError('历史片段格式异常。')
         a, b = round(take['start'] * sr), min(len(merged), round(take['end'] * sr))
         clip = np.pad(clip[:b-a], (0, max(0, b-a-len(clip))))
+        clip = match_vocal_level(clip,audio[a:b],sr)
         fade = min(round(.01 * sr), len(clip) // 4)
         envelope = np.ones(len(clip), dtype=np.float32)
         if fade:
