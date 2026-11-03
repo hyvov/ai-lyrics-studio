@@ -3,6 +3,8 @@ const source = new Audio(), accompaniment = new Audio();
 source.preload = accompaniment.preload = 'metadata';
 let projects = [], current = 0, selected = 0, token = '', busy = false;
 let activeVoice = 'source', activeJob = null, pollTimer = null, modelReady = false;
+let timelineSelected = 0, timelineDirty = false;
+const lyricUnits = text => text.replaceAll('<SP>', ' ').match(/[\u4e00-\u9fff]|[A-Za-z]+(?:'[A-Za-z]+)*/g) || [];
 let importKind = 'source', toastTimer, clipEnd = null, waveRevision = 0, playbackFrame;
 const peaks = new Map();
 const project = () => projects[current];
@@ -28,11 +30,11 @@ async function api(path, options = {}) {
 }
 async function mutate(action) {
   if (busy) { toast('正在保存或导入，请稍候。'); return; }
-  busy = true; $('edit').inert = true; $('newProject').inert = true;
+  busy = true; $('edit').inert = true; $('newProject').inert = true; $('timelineEditor').inert = true;
   $('saveState').textContent = '正在处理…';
   try { await action(); $('saveState').textContent = '已保存到本机'; }
   catch (error) { $('saveState').textContent = '未保存'; toast(error.message); }
-  finally { busy = false; $('edit').inert = false; $('newProject').inert = false; }
+  finally { busy = false; $('edit').inert = false; $('newProject').inert = false; $('timelineEditor').inert = false; }
 }
 function replaceProject(p) { projects[current] = p; render(); }
 function render() {
@@ -64,17 +66,26 @@ function render() {
     row.id = 'line-' + i;
     const copy = document.createElement('div'); copy.className = 'lyric-copy';
     const words = document.createElement('div'); words.className = 'words';
-    const chars = Array.from(line.text.replaceAll('<SP>', ''));
+    const displayText=line.text.replaceAll('<SP>', ' ');
+    let textCursor=0;
+    const chars = lyricUnits(line.text);
+    const timed = line.unit_timings?.length === chars.length;
     chars.forEach((char, j) => {
+      const index=displayText.indexOf(char,textCursor);
+      if(index>textCursor)words.append(document.createTextNode(displayText.slice(textCursor,index)));
+      textCursor=index+char.length;
       const b = document.createElement('button'); b.className = 'word'; b.textContent = char;
-      b.title = '按字数估算定位；尚未逐字对齐';
+      const timing = timed ? line.unit_timings[j] : null;
+      b.title = timing ? '已对齐 · ' + timing.start.toFixed(3) + ' — ' + timing.end.toFixed(3) : '按单位数估算定位；可在歌词时间轴提取真实时间';
+      if (timing) { b.dataset.start = timing.start; b.dataset.end = timing.end; }
       b.onclick = () => {
         selected = i;
-        seek(line.start + j / Math.max(chars.length, 1) * (line.end - line.start));
+        seek(timing ? timing.start : line.start + j / Math.max(chars.length, 1) * (line.end - line.start));
         document.querySelectorAll('.lyric-row').forEach((r, k) => r.classList.toggle('selected', k === i));
       };
       words.append(b);
     });
+    if(textCursor<displayText.length)words.append(document.createTextNode(displayText.slice(textCursor)));
     const original = document.createElement('div'); original.className = 'source';
     original.textContent = changed(line) ? '原词：' + line.original : '原词 · ' + fmt(line.start) + ' — ' + fmt(line.end);
     const state = document.createElement('div'); state.className = 'state'; state.title = line.render_warning || '';
@@ -130,7 +141,11 @@ source.addEventListener('timeupdate', () => {
 });
 source.addEventListener('ended', pause);
 source.addEventListener('error', () => { pause(); toast('原唱音频无法解码，请换用 WAV 或 MP3。'); });
-function updateClock() { $('clock').textContent = fmt(+$('seek').value) + ' / ' + fmt(duration()); }
+function updateClock() {
+  const time = +$('seek').value;
+  $('clock').textContent = fmt(time) + ' / ' + fmt(duration());
+  document.querySelectorAll('.word[data-start]').forEach(b => b.classList.toggle('playing-word', time >= +b.dataset.start && time < +b.dataset.end));
+}
 function drawWave(element, values, label = '尚未导入音频') {
   element.replaceChildren(); element.classList.toggle('empty', !values?.length);
   if (!values?.length) { element.textContent = label; return; }
@@ -275,11 +290,7 @@ $('previewSegment').onclick = () => {
   if (!validate()) return; seek(+$('start').value); play(+$('end').value);
 };
 $('seek').oninput = () => { clipEnd = null; seek(+$('seek').value); };
-$('timeline').onclick = () => {
-  if (!project()?.lines.length) { toast('请先导入 SRT 字幕或 LRC 歌词。'); return; }
-  const i = project().lines.findIndex(x => +$('seek').value >= x.start && +$('seek').value < x.end);
-  openEdit(i < 0 ? 0 : i);
-};
+$('timeline').onclick = openTimeline;
 function createDialog() { if (busy) return; $('newName').value = ''; $('newProject').showModal(); }
 $('create').onclick = $('createMain').onclick = createDialog;
 $('cancelCreate').onclick = () => { if (!busy) $('newProject').close(); };
@@ -360,7 +371,98 @@ async function init() {
     render(); document.querySelector('.badge').textContent = '服务未连接'; toast('请运行 python -m backend.app，再打开本机服务地址。');
   }
 }
-const STAGES = {starting:'启动模型进程', alignment:'原词逐字对齐', singing_alignment:'歌声逐字对齐', alignment_warning:'校验短音节边界', pitch:'提取旋律音高', notes:'提取音符与槽位', loading_singer:'加载演唱模型', generating:'生成演唱', composing:'拼接与混音', complete:'生成完成'};
+function openTimeline() {
+  if (!project()?.lines.length) { toast('请先导入 SRT / LRC。'); return; }
+  if (busy) return;
+  timelineSelected = Math.min(selected, project().lines.length-1); timelineDirty = false;
+  const position = +$('seek').value;
+  activeVoice = 'source'; loadAudio(position);
+  renderTimeline(); $('timelineEditor').showModal();
+}
+function renderTimeline() {
+  const p = project(), line = p?.lines[timelineSelected];
+  if (!line) return;
+  const list = $('timelineLines'); list.replaceChildren();
+  p.lines.forEach((x,i) => {
+    const button = document.createElement('button');
+    button.className = i === timelineSelected ? 'selected' : '';
+    const text = document.createElement('span'); text.textContent = (i+1)+'. '+x.text;
+    const time = document.createElement('small'); time.textContent=x.start.toFixed(3)+' — '+x.end.toFixed(3)+' s';
+    button.append(text,time);button.onclick=()=>{
+      if (busy || timelineDirty && !confirm('当前有未保存的修改，放弃后切换句子？')) return;
+      timelineSelected=i;timelineDirty=false;pause();renderTimeline();
+    };list.append(button);
+  });
+  $('timelineLabel').textContent='第 '+(timelineSelected+1)+' 句 · '+line.start.toFixed(3)+' — '+line.end.toFixed(3)+' s';
+  $('timelineOriginal').value=line.original;
+  const timings=line.unit_timings||[];
+  $('timelineHint').textContent=timings.length ? '已保存逐字时间 · '+({manual:'手动校正',HubertFA:'歌声对齐',Qwen:'自动对齐'}[line.alignment_engine]||'已对齐')+' · 手动保存会使旧生成过期。' : '还没有真实逐字时间，请提取；主界面暂按单位数估算定位。';
+  $('extractWords').disabled=!!activeJob||!modelReady||!!p.source_issue;
+  $('extractWords').title=p.source_issue||'';
+  $('cancelAlignment').hidden=!activeJob || activeJob.kind!=='align';
+  $('wordTimeline').replaceChildren();
+  const targets=lyricUnits(line.text);
+  timings.forEach((timing,i)=>{
+    const row=document.createElement('div');row.className='word-time-row';row.dataset.word=timing.text;
+    const button=document.createElement('button');button.textContent=timing.text+(targets.length===timings.length && targets[i]!==timing.text?' → '+targets[i]:'');
+    button.title='点击试听本字';
+    const start=document.createElement('input'),end=document.createElement('input');
+    for(const [input,value,label] of [[start,timing.start,'起点'],[end,timing.end,'终点']]) {
+      input.type='number';input.step='.001';input.min=line.start;input.max=line.end;input.value=value.toFixed(3);
+      input.setAttribute('aria-label','第 '+(i+1)+' 字'+label);input.disabled=!!activeJob;
+      input.oninput=()=>{timelineDirty=true;};
+    }
+    start.className='word-start';end.className='word-end';
+    button.onclick=()=>{
+      const a=parseFloat(start.value),b=parseFloat(end.value);
+      if(!Number.isFinite(a)||!Number.isFinite(b)||a>=b){toast('请先填写有效边界。');return;}
+      pause();seek(a);play(b);
+    };
+    const divider=document.createElement('span');divider.textContent='—';
+    row.append(button,start,divider,end);$('wordTimeline').append(row);
+  });
+  $('saveWordTimes').disabled=!timings.length||!!activeJob;
+}
+$('timelineOriginal').oninput=()=>{timelineDirty=true;};
+$('closeTimeline').onclick=()=>{
+  if(busy||timelineDirty&&!confirm('放弃尚未保存的时间轴修改？'))return;
+  timelineDirty=false;pause();$('timelineEditor').close();
+};
+$('timelineEditor').addEventListener('cancel',event=>{
+  if(busy||timelineDirty&&!confirm('放弃尚未保存的时间轴修改？'))event.preventDefault();
+  else{timelineDirty=false;pause();}
+});
+$('saveOriginal').onclick=()=>mutate(async()=>{
+  const p=project(),line=p.lines[timelineSelected];
+  const updated=await api('projects/'+p.id+'/segments/'+line.id+'/original',{
+    method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:p.revision,text:$('timelineOriginal').value})});
+  timelineDirty=false;replaceProject(updated);renderTimeline();toast('原词校正已保存；已修改的新歌词保留，原词变化后需重新对齐。');
+});
+$('extractWords').onclick=()=>{
+  const p=project(),line=p.lines[timelineSelected];
+  if($('timelineOriginal').value.trim()!==line.original){toast('请先保存原词校正，再提取时间。');return;}
+  if(timelineDirty&&!confirm('重新提取会替换尚未保存的逐字时间，是否继续？'))return;
+  if(line.render_state==='ready'&&!confirm('重新提取会使当前句的旧生成过期，是否继续？'))return;
+  mutate(async()=>{
+    activeJob=await api('projects/'+p.id+'/alignments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:p.revision,segment_ids:[line.id]})});
+    timelineDirty=false;renderTimeline();render();pollJob();
+  });
+};
+$('cancelAlignment').onclick=()=>$('cancelJob').click();
+$('saveWordTimes').onclick=()=>mutate(async()=>{
+  const p=project(),line=p.lines[timelineSelected];
+  if($('timelineOriginal').value.trim()!==line.original)throw new Error('请先保存原词校正。');
+  const timings=Array.from($('wordTimeline').children).map(row=>({text:row.dataset.word,
+    start:parseFloat(row.querySelector('.word-start').value),end:parseFloat(row.querySelector('.word-end').value)}));
+  const updated=await api('projects/'+p.id+'/segments/'+line.id+'/timeline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:p.revision,unit_timings:timings})});
+  timelineDirty=false;replaceProject(updated);renderTimeline();toast('逐字时间已保存，下一次生成会复用这些边界。');
+});
+$('openPhraseEditor').onclick=()=>{
+  if(timelineDirty&&!confirm('放弃尚未保存的修改并打开整句编辑？'))return;
+  const index=timelineSelected;timelineDirty=false;$('timelineEditor').close();openEdit(index);
+};
+
+const STAGES = {starting:'启动模型进程', alignment_cached:'复用已保存的逐字时间', alignment:'原词逐字对齐', singing_alignment:'歌声逐字对齐', alignment_warning:'校验短音节边界', pitch:'提取旋律音高', notes:'提取音符与槽位', loading_singer:'加载演唱模型', generating:'生成演唱', composing:'拼接与混音', complete:'生成完成'};
 async function startRender(ids) {
   const p = project();
   activeJob = await api('projects/' + p.id + '/renders', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:p.revision,segment_ids:ids})});
@@ -373,6 +475,7 @@ async function pollJob() {
   try {
     const job = await api('jobs/' + activeJob.id); activeJob = job;
     $('jobStage').textContent = STAGES[job.stage] || job.stage;
+    if ($('timelineEditor').open && !timelineDirty && !['succeeded','failed','cancelled','interrupted','stale'].includes(job.status)) $('timelineHint').textContent='正在'+(STAGES[job.stage]||job.stage)+'…';
     $('jobDetail').textContent = (job.position ? ' · 第 ' + job.position + ' / ' + job.total + ' 句' : '') + ' · 模型进程独立运行';
     if (['succeeded','failed','cancelled','interrupted','stale'].includes(job.status)) {
       activeJob = null; panel.hidden = true;
@@ -380,10 +483,11 @@ async function pollJob() {
       if (p && p.id === job.project_id) {
         const latest = await api('projects/' + p.id); replaceProject(latest);
         if (job.status === 'succeeded' && latest.rendered_available) activeVoice = 'rendered';
-        loadAudio();
+        if (job.kind !== 'align') loadAudio();
       }
       render();
-      toast(job.status === 'succeeded' ? '真实演唱已生成，可切换原唱/改词试听。' + (job.warnings.length ? job.warnings.join(' ') : '') : job.error || '生成已取消。');
+      if ($('timelineEditor').open && !timelineDirty) renderTimeline();
+      toast(job.status === 'succeeded' ? (job.kind === 'align' ? '逐字时间已提取并保存。' : '真实演唱已生成，可切换原唱/改词试听。') + (job.warnings.length ? job.warnings.join(' ') : '') : job.error || '生成已取消。');
       return;
     }
     $('cancelJob').disabled = job.status === 'cancelled';

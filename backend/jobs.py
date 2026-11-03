@@ -13,7 +13,8 @@ from uuid import uuid4
 
 from backend.runtime import ROOT, Runtime
 from backend.media import source_issue
-from backend.singing import composition_fingerprint, fingerprint, validate_render
+from backend.singing import composition_fingerprint, fingerprint, validate_render, validate_alignment
+from backend.timeline import alignment_fingerprint, cached_alignment, validate_timings
 from backend.store import Conflict
 
 TERMINAL = {'succeeded', 'failed', 'cancelled', 'interrupted', 'stale'}
@@ -45,7 +46,7 @@ class RenderJobs:
             job.update(changes)
             self._persist(job)
 
-    def submit(self, project_id, revision, segment_ids):
+    def submit(self, project_id, revision, segment_ids, kind='render'):
         with self.lock:
             if self.active:
                 raise Conflict('已有生成任务正在运行，请等待完成或取消。')
@@ -55,19 +56,22 @@ class RenderJobs:
             issue = source_issue(p, self.assets)
             if issue:
                 raise ValueError(issue)
-            selected = validate_render(p, segment_ids)
+            if kind not in ('render','align'):
+                raise ValueError('无效任务类型。')
+            selected = (validate_alignment if kind == 'align' else validate_render)(p, segment_ids)
             self.runtime.require()
             job_id = uuid4().hex
             directory = self.root / job_id
             directory.mkdir()
-            job = dict(id=job_id, project_id=project_id, segment_ids=segment_ids, status='running', stage='starting',
+            job = dict(id=job_id, kind=kind, project_id=project_id, segment_ids=segment_ids, status='running', stage='starting',
                        error=None, warnings=[], created_at=time.time())
             self.jobs[job_id] = job
             self.active = job_id
             self._persist(job)
             config = {'core': str(self.runtime.core), 'models': str(self.runtime.models), 'job_dir': str(directory.resolve()),
                       'source': str((self.assets / p['assets']['source']['id']).resolve()), 'segments': selected,
-                      'existing_takes': [], 'hfa': self.runtime.hfa_config()}
+                      'existing_takes': [], 'hfa': self.runtime.hfa_config(), 'operation':kind,
+                      'saved_alignments':{x['id']:cached_alignment(p,x) for x in selected if kind == 'render' and cached_alignment(p,x)}}
             if p['assets'].get('accompaniment'):
                 config['accompaniment'] = str((self.assets / p['assets']['accompaniment']['id']).resolve())
             for line in p['lines']:
@@ -109,7 +113,11 @@ class RenderJobs:
                     return
                 if code:
                     raise RuntimeError(error or '模型进程异常退出，请检查任务日志或显存占用。')
-                self._publish(job, snapshot, directory)
+                if job.get('kind') == 'align':
+                    self._publish_alignment(job, snapshot, directory, final=True)
+                else:
+                    self._publish_alignment(job, snapshot, directory, final=False)
+                    self._publish(job, snapshot, directory)
         except Exception as exc:
             if job['status'] != 'cancelled':
                 message = str(exc)
@@ -120,6 +128,41 @@ class RenderJobs:
             with self.lock:
                 self.active = None
                 self.process = None
+
+    def _publish_alignment(self, job, snapshot, directory, final):
+        path = directory / 'alignment-result.json'
+        if not path.is_file():
+            if final:
+                raise ValueError('对齐任务未产生时间轴。')
+            return
+        results = json.loads(path.read_text(encoding='utf-8'))
+        original = {x['id']:x for x in snapshot['lines']}
+        with self.store.lock:
+            current = self.store.get(snapshot['id'])
+            lines = {x['id']:x for x in current['lines']}
+            accepted = 0
+            for result in results:
+                key = result['segment_id']
+                if key not in original or key not in lines or alignment_fingerprint(current,lines[key]) != alignment_fingerprint(snapshot,original[key]):
+                    continue
+                timing = validate_timings(lines[key],result['unit_timings'])
+                # A manual edit made during the task always wins over automatic output.
+                now, before = cached_alignment(current,lines[key]), cached_alignment(snapshot,original[key])
+                if now and now.get('engine') == 'manual' and now != before:
+                    continue
+                current.setdefault('alignments',{})[key] = {'fingerprint':alignment_fingerprint(current,lines[key]),
+                    'engine':result['engine'],'unit_timings':timing}
+                if final:
+                    current.get('renders',{}).pop(key,None)
+                accepted += 1
+            if accepted:
+                if final:
+                    current.pop('composite',None)
+                current['revision'] += 1
+                self.store._write(current)
+            if final:
+                self._set(job,status='succeeded' if accepted else 'stale',stage='complete',accepted=accepted,
+                          error=None if accepted else '原词或边界已修改，旧对齐结果未覆盖。')
 
     def _publish(self, job, snapshot, directory):
         outputs = json.loads((directory / 'result.json').read_text(encoding='utf-8'))

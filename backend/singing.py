@@ -15,21 +15,28 @@ def units(text):
     return found
 
 
-def validate_render(project, segment_ids):
+def validate_alignment(project, segment_ids):
     if not project.get('assets', {}).get('source'):
         raise ValueError('请先导入原唱干声。')
-    if not isinstance(segment_ids, list) or not segment_ids or len(segment_ids) > 100 or any(not isinstance(x, str) for x in segment_ids) or len(set(segment_ids)) != len(segment_ids):
+    if not isinstance(segment_ids, list) or not segment_ids or len(segment_ids) > 100 or any(not isinstance(x,str) for x in segment_ids) or len(set(segment_ids)) != len(segment_ids):
         raise ValueError('请选择 1–100 个不同的歌词片段。')
     if project['duration'] > 1800:
-        raise ValueError('首版生成支持 30 分钟以内的工程。')
+        raise ValueError('首版支持 30 分钟以内的工程。')
     selected = [x for x in project['lines'] if x['id'] in segment_ids]
     if len(selected) != len(segment_ids):
         raise ValueError('歌词片段不存在。')
     for line in selected:
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', line['id']):
             raise ValueError('歌词片段 ID 无效。')
-        if not 1 <= line['end'] - line['start'] <= 20:
-            raise ValueError('每个生成片段须为 1–20 秒，请调整边界。')
+        if not 1 <= line['end']-line['start'] <= 20:
+            raise ValueError('每个片段须为 1–20 秒，请调整句子边界。')
+        units(line['original'])
+    return selected
+
+
+def validate_render(project, segment_ids):
+    selected = validate_alignment(project, segment_ids)
+    for line in selected:
         if len(units(line['original'])) != len(units(line['text'])):
             raise ValueError('首版需保持新词与原词的发音单位数一致（一个汉字或英文单词算一个单位）。')
         if line.get('restore'):
@@ -44,6 +51,10 @@ def fingerprint(project, line):
     payload = {'source': project.get('assets', {}).get('source', {}).get('id'),
                'line': values,
                'pipeline': 'soulx-v1-aligned-rosvot-fp16-32'}
+    from backend.timeline import cached_alignment
+    alignment = cached_alignment(project, line)
+    if alignment and alignment.get('engine') == 'manual':
+        payload['manual_timings'] = alignment['unit_timings']
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 def repair_alignment(items, duration):

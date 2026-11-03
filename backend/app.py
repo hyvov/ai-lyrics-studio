@@ -15,7 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from backend.store import Conflict, Store, export_lrc, export_srt, parse_lyrics
 from backend.jobs import RenderJobs
 from backend.media import source_issue
-from backend.singing import fingerprint, composition_fingerprint
+from backend.singing import fingerprint, composition_fingerprint, units
+from backend.timeline import alignment_fingerprint, cached_alignment, validate_timings
 from contextlib import asynccontextmanager
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +41,10 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     def view(p):
         p['source_issue'] = source_issue(p, assets)
         for line in p['lines']:
+            alignment = cached_alignment(p,line)
+            line['unit_timings'] = alignment['unit_timings'] if alignment else []
+            line['alignment_engine'] = alignment.get('engine') if alignment else None
+            line['alignment_state'] = 'ready' if alignment else 'pending'
             take = p.get('renders', {}).get(line['id'])
             valid = take and take['fingerprint'] == fingerprint(p, line)
             line['render_state'] = 'ready' if valid else ('stale' if take else 'pending')
@@ -184,6 +189,46 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     async def render(project_id: str, request: Request):
         value = await body(request)
         return jobs.submit(project_id, value.get('revision'), value.get('segment_ids'))
+
+    @app.post('/api/projects/{project_id}/alignments', status_code=202)
+    async def align(project_id: str, request: Request):
+        value = await body(request)
+        return jobs.submit(project_id,value.get('revision'),value.get('segment_ids'),kind='align')
+
+    @app.put('/api/projects/{project_id}/segments/{segment_id}/timeline')
+    async def edit_word_times(project_id: str, segment_id: str, request: Request):
+        value = await body(request)
+        with store.lock:
+            p = store.get(project_id)
+            if type(value.get('revision')) is not int or value['revision'] != p['revision']:
+                raise Conflict('工程已更新，请重新打开时间轴。')
+            line = next((x for x in p['lines'] if x['id'] == segment_id), None)
+            if line is None:
+                raise FileNotFoundError()
+            timings = validate_timings(line,value.get('unit_timings'))
+            p.setdefault('alignments',{})[segment_id] = {'fingerprint':alignment_fingerprint(p,line),
+                'engine':'manual','unit_timings':timings}
+            p['revision'] += 1
+            return view(store._write(p))
+
+    @app.put('/api/projects/{project_id}/segments/{segment_id}/original')
+    async def correct_original(project_id: str, segment_id: str, request: Request):
+        value = await body(request)
+        with store.lock:
+            p = store.get(project_id)
+            if type(value.get('revision')) is not int or value['revision'] != p['revision']:
+                raise Conflict('工程已更新，请重新打开时间轴。')
+            line = next((x for x in p['lines'] if x['id'] == segment_id),None)
+            if line is None:
+                raise FileNotFoundError()
+            text = value.get('text')
+            if not isinstance(text,str) or not text.strip():
+                raise ValueError('原唱实际唱词不能为空。')
+            text = text.strip(); units(text)
+            if line['text'] == line['original']:
+                line['text'] = text
+            line['original'] = text
+            return view(store.update(project_id,p))
 
     @app.get('/api/jobs/{job_id}')
     def get_job(job_id: str):

@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / 'runtime/worker-deps'))
 os.environ.setdefault('MPLBACKEND', 'Agg')
 os.environ.setdefault('MPLCONFIGDIR', str(ROOT / 'runtime/matplotlib-cache'))
 from backend.singing import units, repair_alignment
+from backend.timeline import timings_to_slots
 
 
 def report(stage, **data):
@@ -85,7 +86,7 @@ def align_words(aligner, waveform, text, sr, diagnostic_path=None):
         if units(item.text)[0].lower() != word.lower():
             raise ValueError('逐字对齐文本不匹配，请检查原词。')
         a, b = repaired[index]
-        if not np.isfinite(a + b) or a < cursor - .04 or b > duration + .08 or b - a < .02:
+        if not np.isfinite(a + b) or a < cursor - .04 or b > duration + .08 or b - a < .02 - .000001:
             raise ValueError(f'逐字对齐出现异常时间（{word}: {a:.3f}–{b:.3f}，前字结束 {cursor:.3f}），请修正原词或边界。')
         a, b = max(cursor, a), min(duration, b)
         gap = a - cursor
@@ -125,6 +126,7 @@ def run(config):
     segments = config['segments']
     prepared = []
     hfa, qwen = None, None
+    timing_results = []
     if config.get('hfa'):
         try:
             from backend.hfa import HfaAligner
@@ -135,11 +137,16 @@ def run(config):
         crop = audio[round(line['start'] * sr):round(line['end'] * sr)]
         if len(crop) < sr or np.max(np.abs(crop)) < .001:
             raise ValueError('当前句音频过短或接近静音，请调整边界。')
-        aligned = None
-        if hfa is not None:
+        saved = config.get('saved_alignments', {}).get(line['id'])
+        aligned = timings_to_slots(line, saved['unit_timings']) if saved else None
+        engine = saved.get('engine', 'cached') if saved else None
+        if saved:
+            report('alignment_cached', segment_id=line['id'], position=position, total=len(segments))
+        if aligned is None and hfa is not None:
             report('singing_alignment', segment_id=line['id'], position=position, total=len(segments))
             try:
                 aligned = align_words(hfa, crop, line['original'], sr, jobdir / (line['id'] + '-hfa-alignment.json'))
+                engine = 'HubertFA'
             except Exception as exc:
                 report('alignment_warning', message=f'第 {position} 句歌声对齐未通过校验，尝试备用模型：{exc}')
         if aligned is None:
@@ -150,14 +157,25 @@ def run(config):
                                                         dtype=torch.float16, device_map=device, local_files_only=True)
             try:
                 aligned = align_words(qwen, crop, line['original'], sr, jobdir / (line['id'] + '-qwen-alignment.json'))
+                engine = 'Qwen'
             except ValueError as exc:
                 raise ValueError(f'第 {position} 句对齐失败：{exc}') from exc
         words, spans, indices = aligned
+        cursor, unit_timings = line['start'], []
+        for word, span, index in zip(words, spans, indices):
+            if index is not None:
+                unit_timings.append({'text':word,'start':round(cursor,6),'end':round(cursor+span,6)})
+            cursor += span
+        timing_results.append({'segment_id':line['id'],'engine':engine,'unit_timings':saved['unit_timings'] if saved and engine == 'manual' else unit_timings})
         path = jobdir / (line['id'] + '-reference.wav')
         sf.write(path, crop, sr)
         prepared.append((line, path, crop, words, spans, indices))
+    (jobdir / 'alignment-result.json').write_text(json.dumps(timing_results,ensure_ascii=False),encoding='utf-8')
     del hfa, qwen
     clear_gpu()
+    if config.get('operation') == 'align':
+        report('complete', count=len(timing_results))
+        return
 
     report('pitch')
     from preprocess.tools.f0_extraction import F0Extractor
