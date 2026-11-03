@@ -34,7 +34,11 @@ async function mutate(action) {
   $('saveState').textContent = '正在处理…';
   try { await action(); $('saveState').textContent = '已保存到本机'; }
   catch (error) { $('saveState').textContent = '未保存'; toast(error.message); }
-  finally { busy = false; $('edit').inert = false; $('newProject').inert = false; $('timelineEditor').inert = false; }
+  finally {
+    busy = false; $('edit').inert = false; $('newProject').inert = false; $('timelineEditor').inert = false;
+    if($('timelineEditor').open)refreshWordWave();
+    if($('edit').open)drawEditorWave();
+  }
 }
 function replaceProject(p) { projects[current] = p; render(); }
 function render() {
@@ -145,13 +149,36 @@ function updateClock() {
   const time = +$('seek').value;
   $('clock').textContent = fmt(time) + ' / ' + fmt(duration());
   document.querySelectorAll('.word[data-start]').forEach(b => b.classList.toggle('playing-word', time >= +b.dataset.start && time < +b.dataset.end));
+  phraseWaveEditor?.setPlayhead(time); wordWaveEditor?.setPlayhead(time);
 }
+const waveValues = new WeakMap();
+function paintWave(element) {
+  const values = waveValues.get(element);
+  if (!values?.length || !element.clientWidth) return;
+  const width = element.clientWidth, count = Math.min(values.length, Math.max(1, Math.floor(width / 2)));
+  const envelope = [];
+  for (let i = 0; i < count; i++) {
+    let peak = 0;
+    for (let j = Math.floor(i * values.length / count); j < Math.floor((i + 1) * values.length / count); j++) peak = Math.max(peak, values[j]);
+    envelope.push(peak);
+  }
+  const positive = envelope.filter(v => v > 1e-8).sort((a,b) => a-b);
+  const reference = positive[Math.min(positive.length-1, Math.floor(positive.length * .96))] || 1;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', `0 0 ${width} 100`); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(svg.namespaceURI, 'path');
+  path.setAttribute('d', envelope.map((v,i) => {
+    const half = Math.max(.5, Math.min(1, v / reference * .92) * 48), x = ((i+.5)*width/count).toFixed(2);
+    return `M${x},${(50-half).toFixed(2)}V${(50+half).toFixed(2)}`;
+  }).join(''));
+  svg.append(path); element.replaceChildren(svg);
+}
+const waveObserver = new ResizeObserver(entries => entries.forEach(({target}) => paintWave(target)));
 function drawWave(element, values, label = '尚未导入音频') {
+  waveObserver.unobserve(element); waveValues.set(element, values);
   element.replaceChildren(); element.classList.toggle('empty', !values?.length);
   if (!values?.length) { element.textContent = label; return; }
-  for (const amplitude of values) {
-    const bar = document.createElement('i'); bar.style.height = Math.max(1, amplitude * 100) + '%'; element.append(bar);
-  }
+  paintWave(element); waveObserver.observe(element);
 }
 async function decodePeaks(asset, revision) {
   if (!asset) return null;
@@ -162,28 +189,56 @@ async function decodePeaks(asset, revision) {
   if (revision !== waveRevision) return null;
   const context = new AudioContext();
   try {
-    const decoded = await context.decodeAudioData(buffer), channel = decoded.getChannelData(0);
-    const bins = 1200, block = Math.ceil(channel.length / bins), result = [];
+    const decoded = await context.decodeAudioData(buffer);
+    const channels = Array.from({length: decoded.numberOfChannels}, (_,i) => decoded.getChannelData(i));
+    const bins = Math.min(360000, Math.max(1, Math.ceil(decoded.duration * 200)));
+    const result = [];
     for (let i = 0; i < bins; i++) {
       let max = 0;
-      for (let j = i * block; j < Math.min((i + 1) * block, channel.length); j++) max = Math.max(max, Math.abs(channel[j]));
+      for (let j = Math.floor(i * decoded.length / bins); j < Math.floor((i + 1) * decoded.length / bins); j++) {
+        for (const channel of channels) max = Math.max(max, Math.abs(channel[j]));
+      }
       result.push(max);
     }
     peaks.set(asset.id, result); return result;
   } finally { await context.close(); }
 }
-function reducePeaks(values, bins = 190) {
-  if (!values?.length) return null;
-  const block = Math.max(1, Math.ceil(values.length / bins)), result = [];
-  for (let i = 0; i < values.length; i += block) result.push(Math.max(...values.slice(i, i + block)));
-  return result;
-}
+let phraseWaveEditor = null, wordWaveEditor = null;
 function drawEditorWave() {
   const values = peaks.get(project()?.assets.source?.id);
   const start = +$('start').value, end = +$('end').value;
   const slice = values?.slice(Math.floor(start / duration() * values.length), Math.ceil(end / duration() * values.length));
-  drawWave(document.querySelector('[data-wave="3"]'), reducePeaks(slice), '导入音频后显示当前句波形');
-  drawWave(document.querySelector('[data-wave="4"]'), reducePeaks(values), '整首概览');
+  drawWave(document.querySelector('[data-wave="3"]'), slice, '导入音频后显示当前句波形');
+  drawWave(document.querySelector('[data-wave="4"]'), values, '整首概览');
+  if (phraseWaveEditor) {
+    const p=project(), line=p.lines[selected];
+    phraseWaveEditor.setData({key:p.id+line.id, values, duration:duration(),
+      domain:[Math.max(p.lines[selected-1]?.end||0,line.start-1),Math.min(p.lines[selected+1]?.start??duration(),line.end+1)],
+      regions:[{text:'当前句',start,end}], disabled:busy||!!activeJob});
+  }
+}
+function ensurePhraseWave() {
+  if(phraseWaveEditor)return;
+  const old=document.querySelector('[data-wave="3"]'), host=document.createElement('div');
+  old.hidden=true;old.before(host);
+  phraseWaveEditor=new WaveEditor(host,{draw:drawWave,onSeek:t=>{pause();seek(t);},onChange:regions=>{
+    const r=regions[0];$('start').value=$('startRange').value=r.start.toFixed(3);$('end').value=$('endRange').value=r.end.toFixed(3);
+    validate();
+  }});
+}
+function refreshWordWave() {
+  const p=project(), line=p?.lines[timelineSelected];if(!line||!wordWaveEditor)return;
+  const regions=Array.from($('wordTimeline').children).map(row=>({text:row.dataset.word,start:parseFloat(row.querySelector('.word-start').value),end:parseFloat(row.querySelector('.word-end').value)}));
+  if(regions.some(r=>!Number.isFinite(r.start)||!Number.isFinite(r.end)))return;
+  wordWaveEditor.setData({key:p.id+line.id,values:peaks.get(p.assets.source?.id),duration:duration(),domain:[line.start,line.end],regions,disabled:busy||!!activeJob});
+}
+function ensureWordWave() {
+  if(wordWaveEditor)return;
+  const host=document.createElement('div');$('timelineHint').after(host);
+  wordWaveEditor=new WaveEditor(host,{draw:drawWave,onSeek:t=>{pause();seek(t);},onChange:regions=>{
+    regions.forEach((r,i)=>{const row=$('wordTimeline').children[i];row.querySelector('.word-start').value=r.start.toFixed(3);row.querySelector('.word-end').value=r.end.toFixed(3);});
+    timelineDirty=true;
+  }});
 }
 async function loadAudio(position = 0, resume = false) {
   pause(); const p = project(), revision = ++waveRevision;
@@ -204,8 +259,9 @@ async function loadAudio(position = 0, resume = false) {
     drawWave(el, null, asset ? '正在读取波形…' : '未导入音频');
     if (asset) decodePeaks(asset, revision).then(values => {
       if (revision === waveRevision) {
-        drawWave(el, reducePeaks(values), '波形暂不可用，仍可尝试试听');
+        drawWave(el, values, '波形暂不可用，仍可尝试试听');
         if ($('edit').open) drawEditorWave();
+        if ($('timelineEditor').open) refreshWordWave();
       }
     }).catch(() => { if (revision === waveRevision) drawWave(el, null, '波形暂不可用'); });
   }
@@ -230,7 +286,7 @@ function openEdit(i) {
   $('regenerate').disabled = !!activeJob || !modelReady || !!project()?.source_issue;
   $('regenerate').title = project()?.source_issue || '';
   document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('chosen', b.dataset.mode === line.mode));
-  validate(); $('edit').showModal();
+  ensurePhraseWave(); validate(); $('edit').showModal(); drawEditorWave();
 }
 function validate() {
   const p = project(), a = +$('start').value, b = +$('end').value;
@@ -410,7 +466,7 @@ function renderTimeline() {
     for(const [input,value,label] of [[start,timing.start,'起点'],[end,timing.end,'终点']]) {
       input.type='number';input.step='.001';input.min=line.start;input.max=line.end;input.value=value.toFixed(3);
       input.setAttribute('aria-label','第 '+(i+1)+' 字'+label);input.disabled=!!activeJob;
-      input.oninput=()=>{timelineDirty=true;};
+      input.oninput=()=>{timelineDirty=true;refreshWordWave();};
     }
     start.className='word-start';end.className='word-end';
     button.onclick=()=>{
@@ -422,6 +478,7 @@ function renderTimeline() {
     row.append(button,start,divider,end);$('wordTimeline').append(row);
   });
   $('saveWordTimes').disabled=!timings.length||!!activeJob;
+  ensureWordWave(); refreshWordWave();
 }
 $('timelineOriginal').oninput=()=>{timelineDirty=true;};
 $('closeTimeline').onclick=()=>{
