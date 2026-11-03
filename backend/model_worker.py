@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'runtime/worker-deps'))
 os.environ.setdefault('MPLBACKEND', 'Agg')
 os.environ.setdefault('MPLCONFIGDIR', str(ROOT / 'runtime/matplotlib-cache'))
-from backend.singing import units, repair_alignment
+from backend.singing import units, repair_alignment, repair_score_pitches
 from backend.timeline import timings_to_slots
 
 
@@ -195,13 +195,17 @@ def run(config):
     transcriber = NoteTranscriber(str(pre / 'rosvot/model.pt'), str(pre / 'rwbd/model.pt'), device=device, verbose=False)
     from preprocess.tools.g2p import g2p_transform
     metadata = []
-    for (line, path, crop, words, spans, indices), f0 in zip(prepared, f0s):
+    for position, ((line, path, crop, words, spans, indices), f0) in enumerate(zip(prepared, f0s),1):
         item = dict(item_name=line['id'], wav_fn=str(path), origin_wav_fn=str(path), words=words, word_durs=spans, language='Mandarin')
         notes = transcriber.process(item, apply_rwbd=False, verbose=False)
         note_words, durations = notes['note_text'], notes['note_dur']
         pitches, types = notes['note_pitch'], notes['note_type']
         if not note_words or len({len(note_words), len(durations), len(pitches), len(types)}) != 1:
             raise ValueError('音符转录失败，请调整边界或换用清晰干声。')
+        if line['mode']=='score':
+            pitches,repaired=repair_score_pitches(pitches,types,durations)
+            if repaired:
+                report('pitch_warning',message=f'第 {position} 个处理片段有 {repaired} 个无效 MIDI 音高，已参考邻近音符修复，请试听。')
         # Map type=2 word onsets to aligned original words. Slur notes (type=3)
         # retain the same original and new pronunciation; silence stays silence.
         target_units = units(line['text'])

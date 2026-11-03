@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
+from backend.singing import repair_score_pitches
 
 from backend.jobs import RenderJobs
 from backend.singing import units, fingerprint, composition_fingerprint, repair_alignment, validate_render
@@ -11,6 +12,11 @@ from backend.store import Store
 
 
 class SingingTests(unittest.TestCase):
+    def test_score_pitch_repair_uses_closest_voiced_note(self):
+        pitches,repaired=repair_score_pitches([0,60,0,67,0],[1,2,2,3,2],[.2,.3,.1,.5,.2])
+        self.assertEqual(pitches,[0,60,60,67,67]);self.assertEqual(repaired,2)
+        with self.assertRaises(ValueError):repair_score_pitches([0,0],[1,2],[.2,.2])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

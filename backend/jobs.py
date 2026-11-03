@@ -164,6 +164,33 @@ class RenderJobs:
             threading.Thread(target=self._run,args=(job,copy.deepcopy(p)),daemon=True).start()
             return copy.deepcopy(job)
 
+    def submit_compose(self,project_id,revision):
+        with self.lock:
+            if self.active:raise Conflict('已有模型任务正在运行，请等待完成或取消。')
+            p=self.store.get(project_id)
+            if type(revision) is not int or revision!=p['revision']:raise Conflict('工程已更新，请刷新后再试。')
+            source=p.get('assets',{}).get('source')
+            if not source or not (self.assets/source['id']).is_file():raise ValueError('原唱音频不存在。')
+            if p['duration']>1800:raise ValueError('暂支持 30 分钟以内的工程。')
+            takes=[]
+            for line in p['lines']:
+                take=p.get('renders',{}).get(line['id'])
+                if take and take.get('fingerprint')==fingerprint(p,line):
+                    path=self.assets/take['asset_id']
+                    if not path.is_file():raise ValueError('已生成的演唱片段不存在，请重新生成。')
+                    takes.append({'start':line['start'],'end':line['end'],'path':str(path.resolve())})
+            if not takes:raise ValueError('尚无可复用的演唱片段，请先生成改词。')
+            if not self.runtime.python.is_file():raise ValueError('本机音频处理运行环境不存在。')
+            job_id=uuid4().hex;directory=self.root/job_id;directory.mkdir()
+            job=dict(id=job_id,kind='compose',project_id=project_id,segment_ids=[],status='running',stage='starting',error=None,warnings=[],created_at=time.time())
+            self.jobs[job_id]=job;self.active=job_id;self._persist(job)
+            config={'source':str((self.assets/source['id']).resolve()),'takes':takes,'job_dir':str(directory.resolve())}
+            backing=p.get('assets',{}).get('accompaniment')
+            if backing:config['accompaniment']=str((self.assets/backing['id']).resolve())
+            (directory/'input.json').write_text(json.dumps(config,ensure_ascii=False),encoding='utf-8')
+            threading.Thread(target=self._run,args=(job,copy.deepcopy(p)),daemon=True).start()
+            return copy.deepcopy(job)
+
     def _run(self, job, snapshot):
         directory = self.root / job['id']
         error = None
@@ -173,7 +200,7 @@ class RenderJobs:
             with self.lock:
                 if job['status'] == 'cancelled':
                     return
-                worker = {'separate':'separation_worker.py','transcribe':'transcribe_worker.py','svc':'svc_worker.py'}.get(job.get('kind'),'model_worker.py')
+                worker = {'separate':'separation_worker.py','transcribe':'transcribe_worker.py','svc':'svc_worker.py','compose':'compose_worker.py'}.get(job.get('kind'),'model_worker.py')
                 process = subprocess.Popen([str(self.runtime.python), '-u', str(ROOT / 'backend' / worker), '--config', str((directory / 'input.json').resolve())],
                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace',
                                            cwd=ROOT, env=env, creationflags=flags)
@@ -185,7 +212,7 @@ class RenderJobs:
                         value = json.loads(line[len('STUDIO_EVENT '):])
                         if value['stage'] == 'failed':
                             error = value.get('error')
-                        if value['stage'] == 'alignment_warning':
+                        if value['stage'] in ('alignment_warning','pitch_warning'):
                             with self.lock:
                                 job['warnings'].append(value['message'])
                         if job['status'] != 'cancelled':
@@ -202,6 +229,8 @@ class RenderJobs:
                     self._publish_transcription(job, snapshot, directory)
                 elif job.get('kind') == 'svc':
                     self._publish_svc(job,snapshot,directory)
+                elif job.get('kind') == 'compose':
+                    self._publish_compose(job,snapshot,directory)
                 elif job.get('kind') == 'align':
                     self._publish_alignment(job, snapshot, directory, final=True)
                 else:
@@ -217,6 +246,24 @@ class RenderJobs:
             with self.lock:
                 self.active = None
                 self.process = None
+
+    def _publish_compose(self,job,snapshot,directory):
+        with self.store.lock:
+            current=self.store.get(snapshot['id'])
+            if composition_fingerprint(current)!=composition_fingerprint(snapshot) or current.get('renders',{})!=snapshot.get('renders',{}):
+                self._set(job,status='stale',error='合成期间歌词、素材或演唱片段已改变，结果未覆盖。');return
+            created=[];composite={'fingerprint':composition_fingerprint(current)}
+            try:
+                for name in ('rendered','mixed'):
+                    path=directory/(name+'.wav')
+                    if name=='rendered' or current.get('assets',{}).get('accompaniment'):
+                        if not path.is_file() or path.stat().st_size<=44:raise ValueError('混音结果不完整。')
+                        asset_id=uuid4().hex+'.wav';shutil.copyfile(path,self.assets/asset_id);created.append(asset_id);composite[name]=asset_id
+                current['composite']=composite;current['revision']+=1;self.store._write(current)
+            except Exception:
+                for asset_id in created:(self.assets/asset_id).unlink(missing_ok=True)
+                raise
+            self._set(job,status='succeeded',stage='complete')
 
     def _publish_svc(self,job,snapshot,directory):
         target_kind=job['target_kind']

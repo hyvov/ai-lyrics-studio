@@ -114,6 +114,8 @@ function render() {
   $('versionSvc').disabled = $('exportSvc').disabled = !p?.svc_available;
   $('exportSvcMix').disabled = !p?.svc_mixed_available;
   $('startSvc').disabled = !p?.assets.source || !!activeJob || !!p?.source_issue;
+  $('recompose').disabled = !p?.assets.source || !p?.assets.accompaniment || !!activeJob || !p?.lines.some(x=>x.render_state==='ready');
+  $('recompose').title = '复用已生成的唱句重新合成人声和伴奏，无需重新运行演唱模型';
   $('exportVoice').disabled = $('exportMix').disabled = !p?.rendered_available || !p?.render_complete;
   if (!p?.assets.accompaniment) $('exportMix').disabled = true;
   ['importSong', 'importSource', 'importAccompaniment', 'importLyrics', 'exportLyrics'].forEach(id => $(id).disabled = !p);
@@ -354,6 +356,12 @@ $('regenerate').onclick = () => {
   });
 };
 $('batch').onclick = () => mutate(() => startRender(project().lines.filter(x => changed(x) && x.render_state !== 'ready').map(x => x.id)));
+$('recompose').onclick=()=>mutate(()=>startCompose());
+async function startCompose() {
+  const p=project();
+  activeJob=await api('projects/'+p.id+'/compose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:p.revision})});
+  render();pollJob();
+}
 $('batchAlign').onclick = () => {
   const p=project(), lines=p.lines.filter(x=>x.alignment_state!=='ready').slice(0,100);
   if(!lines.length)return;
@@ -440,7 +448,12 @@ $('audioFile').onchange = () => {
     } else if(importKind==='reference') {
       activeJob=await api('projects/'+updated.id+'/svc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:updated.revision,target_kind:svcTargetKind})});
       render();pollJob();toast('参考人声已导入，正在转换音色。');
-    } else { loadAudio(); toast('音频已复制到本机工程，可以试听。'); }
+    } else {
+      loadAudio();
+      if(importKind==='accompaniment' && updated.lines.some(x=>x.render_state==='ready') && !activeJob) {
+        await startCompose();toast('伴奏已导入，正在复用已生成的唱句重新混音。');
+      } else toast('音频已复制到本机工程，可以试听。');
+    }
   });
 };
 $('importLyrics').onclick = () => { if (busy || !project()) return; if (!project().assets.source) { toast('请先导入原唱音频，以确定时间轴长度。'); return; } $('lyricsFile').value = ''; $('lyricsFile').click(); };
@@ -625,7 +638,7 @@ $('mergePhrase').onclick=()=>{
   });
 };
 
-const STAGES = {starting:'启动模型进程', separation_decode:'读取歌曲', separation_vocal:'分离人声与伴奏', separation_dry:'人声去混响与回声', asr_decode:'读取人声', asr_load:'加载识词模型', asr_recognize:'识别歌词草稿', svc_pitch:'分析参考与目标人声音高', svc_load:'加载音色转换模型', svc_generate:'转换人声音色', svc_mix:'合成变声混音', alignment_cached:'复用已保存的逐字时间', alignment:'原词逐字对齐', singing_alignment:'歌声逐字对齐', alignment_warning:'校验短音节边界', pitch:'提取旋律音高', notes:'提取音符与槽位', loading_singer:'加载演唱模型', generating:'生成演唱', composing:'拼接与混音', complete:'任务完成'};
+const STAGES = {starting:'启动模型进程', separation_decode:'读取歌曲', separation_vocal:'分离人声与伴奏', separation_dry:'人声去混响与回声', asr_decode:'读取人声', asr_load:'加载识词模型', asr_recognize:'识别歌词草稿', svc_pitch:'分析参考与目标人声音高', svc_load:'加载音色转换模型', svc_generate:'转换人声音色', svc_mix:'合成变声混音', alignment_cached:'复用已保存的逐字时间', alignment:'原词逐字对齐', singing_alignment:'歌声逐字对齐', alignment_warning:'校验短音节边界', pitch_warning:'修复 MIDI 音高', pitch:'提取旋律音高', notes:'提取音符与槽位', loading_singer:'加载演唱模型', generating:'生成演唱', composing:'拼接与混音', complete:'任务完成'};
 async function startRender(ids) {
   const p = project();
   activeJob = await api('projects/' + p.id + '/renders', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:p.revision,segment_ids:ids})});
@@ -637,7 +650,7 @@ async function pollJob() {
   const panel = $('jobPanel'); panel.hidden = false;
   try {
     const job = await api('jobs/' + activeJob.id); activeJob = job;
-    $('cancelJob').textContent = job.kind === 'align' ? '取消对齐' : job.kind === 'separate' ? '取消分离' : job.kind === 'transcribe' ? '取消识词' : job.kind === 'svc' ? '取消音色转换' : '取消生成';
+    $('cancelJob').textContent = job.kind === 'align' ? '取消对齐' : job.kind === 'separate' ? '取消分离' : job.kind === 'transcribe' ? '取消识词' : job.kind === 'svc' ? '取消音色转换' : job.kind === 'compose' ? '取消混音' : '取消生成';
     $('jobStage').textContent = STAGES[job.stage] || job.stage;
     if ($('timelineEditor').open && !timelineDirty && !['succeeded','failed','cancelled','interrupted','stale'].includes(job.status)) $('timelineHint').textContent='正在'+(STAGES[job.stage]||job.stage)+'…';
     $('jobDetail').textContent = (job.position ? ' · 第 ' + job.position + ' / ' + job.total + ' 句' : '') + ' · 模型进程独立运行';
@@ -646,13 +659,13 @@ async function pollJob() {
       const p = project();
       if (p && p.id === job.project_id) {
         const latest = await api('projects/' + p.id); replaceProject(latest);
-        if (job.kind === 'render' && job.status === 'succeeded' && latest.rendered_available) activeVoice = 'rendered';
+        if (['render','compose'].includes(job.kind) && job.status === 'succeeded' && latest.rendered_available) activeVoice = 'rendered';
         if (job.kind === 'svc' && job.status === 'succeeded' && latest.svc_available) activeVoice = 'svc';
         if (job.kind !== 'align') loadAudio();
       }
       render();
       if ($('timelineEditor').open && !timelineDirty) renderTimeline();
-      toast(job.status === 'succeeded' ? (job.kind === 'align' ? '逐字时间已提取并保存。' : job.kind === 'separate' ? '人声和伴奏已分离并导入工程。' : job.kind === 'transcribe' ? '已生成歌词草稿，请逐句校对原词和边界。' : job.kind === 'svc' ? '音色转换完成，可试听或导出。' : '真实演唱已生成，可切换原唱/改词试听。') + (job.warnings.length ? job.warnings.join(' ') : '') : job.error || '任务已取消。');
+      toast(job.status === 'succeeded' ? (job.kind === 'align' ? '逐字时间已提取并保存。' : job.kind === 'separate' ? '人声和伴奏已分离并导入工程。' : job.kind === 'transcribe' ? '已生成歌词草稿，请逐句校对原词和边界。' : job.kind === 'svc' ? '音色转换完成，可试听或导出。' : job.kind === 'compose' ? '已复用演唱片段完成重新混音。' : '真实演唱已生成，可切换原唱/改词试听。') + (job.warnings.length ? job.warnings.join(' ') : '') : job.error || '任务已取消。');
       return;
     }
     $('cancelJob').disabled = job.status === 'cancelled';

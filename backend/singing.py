@@ -1,6 +1,7 @@
 """Model-independent lyric validation and render input versioning."""
 import hashlib
 import json
+import math
 import re
 
 
@@ -51,6 +52,7 @@ def fingerprint(project, line):
     payload = {'source': project.get('assets', {}).get('source', {}).get('id'),
                'line': values,
                'pipeline': 'soulx-v1-aligned-rosvot-fp16-32'}
+    if line.get('mode')=='score':payload['score_pitch_repair']=1
     from backend.timeline import cached_alignment
     alignment = cached_alignment(project, line)
     if alignment and alignment.get('engine') == 'manual':
@@ -85,6 +87,25 @@ def repair_alignment(items, duration):
         else:
             raise ValueError('歌词短音节无法修复，请校正原词或边界。')
     return spans, len(bad)
+
+
+def repair_score_pitches(pitches, note_types, durations):
+    """Replace unvoiced score notes with the closest valid score pitch."""
+    if not pitches or len(pitches)!=len(note_types) or len(pitches)!=len(durations):
+        raise ValueError('MIDI 音符数据不完整，请重新分析音频。')
+    if any(not isinstance(x,(int,float)) or isinstance(x,bool) or not math.isfinite(x) or x<=0 for x in durations):
+        raise ValueError('MIDI 音符时长无效。')
+    values=[int(x) for x in pitches];kinds=[int(x) for x in note_types]
+    valid=[i for i,(pitch,kind) in enumerate(zip(values,kinds)) if kind!=1 and 0<pitch<=127]
+    invalid=[i for i,(pitch,kind) in enumerate(zip(values,kinds)) if kind!=1 and not 0<pitch<=127]
+    if invalid and not valid:raise ValueError('未检测到有效 MIDI 音高，请检查人声或改用旋律模式。')
+    centers=[];cursor=0.
+    for duration in durations:
+        centers.append(cursor+duration/2);cursor+=duration
+    for i in invalid:
+        nearest=min(valid,key=lambda j:abs(centers[j]-centers[i]))
+        values[i]=values[nearest]
+    return values,len(invalid)
 
 def composition_fingerprint(project):
     payload = {'duration': round(float(project['duration']), 6), 'assets': {k: v.get('id') for k, v in project.get('assets', {}).items() if k in ('source','accompaniment')},

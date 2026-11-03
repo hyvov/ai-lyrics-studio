@@ -218,6 +218,11 @@ def create_app(data_root: Path | None = None) -> FastAPI:
         value=await body(request)
         return jobs.submit_svc(project_id,value.get('revision'),value.get('target_kind'))
 
+    @app.post('/api/projects/{project_id}/compose', status_code=202)
+    async def compose_audio(project_id: str, request: Request):
+        value=await body(request)
+        return jobs.submit_compose(project_id,value.get('revision'))
+
     @app.put('/api/projects/{project_id}/segments/{segment_id}/phrase')
     async def edit_phrase(project_id: str, segment_id: str, request: Request):
         """Save a phrase and any adjacent boundaries as one revision."""
