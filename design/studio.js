@@ -6,6 +6,7 @@ let activeVoice = 'source', activeJob = null, pollTimer = null, modelReady = fal
 let timelineSelected = 0, timelineDirty = false;
 const lyricUnits = text => text.replaceAll('<SP>', ' ').match(/[\u4e00-\u9fff]|[A-Za-z]+(?:'[A-Za-z]+)*/g) || [];
 let importKind = 'source', toastTimer, clipEnd = null, waveRevision = 0, playbackFrame;
+let svcTargetKind = 'source';
 const peaks = new Map();
 const project = () => projects[current];
 const duration = () => project()?.duration || 30;
@@ -65,6 +66,10 @@ function render() {
     const span = document.createElement('span'); span.textContent = text; $('counts').append(span);
   });
   $('lyricsList').replaceChildren();
+  if (p && !p.lines.length && p.assets.source) {
+    const empty=document.createElement('div');empty.className='empty-project';
+    empty.textContent='音频已准备好，请导入 SRT 字幕或 LRC 歌词。';$('lyricsList').append(empty);
+  }
   for (const [i, line] of (p?.lines || []).entries()) {
     const row = document.createElement('article'); row.className = 'lyric-row' + (i === selected ? ' selected' : '');
     row.id = 'line-' + i;
@@ -93,7 +98,7 @@ function render() {
     const original = document.createElement('div'); original.className = 'source';
     original.textContent = changed(line) ? '原词：' + line.original : '原词 · ' + fmt(line.start) + ' — ' + fmt(line.end);
     const state = document.createElement('div'); state.className = 'state'; state.title = line.render_warning || '';
-    state.textContent = line.render_state === 'ready' ? (line.render_warning ? '已生成 · 建议试听校对' : '已生成') : line.render_state === 'stale' ? '修改后待重新生成' : changed(line) ? '待生成' : '';
+    state.textContent = line.needs_review ? '自动识词 · 请校对原词和边界' : line.render_state === 'ready' ? (line.render_warning ? '已生成 · 建议试听校对' : '已生成') : line.render_state === 'stale' ? '修改后待重新生成' : changed(line) ? '待生成' : '';
     const edit = document.createElement('button'); edit.className = 'edit-button'; edit.textContent = '♧ 改词'; edit.onclick = () => openEdit(i);
     copy.append(words, original, state); row.append(copy, edit); $('lyricsList').append(row);
   }
@@ -102,12 +107,16 @@ function render() {
   $('batchAlign').textContent = '提取未对齐歌词 ' + unaligned + ' 句';
   $('batchAlign').disabled = !unaligned || !!activeJob || !modelReady || !p?.assets.source || !!p?.source_issue;
   $('batchAlign').title = p?.source_issue || '批量提取未对齐的逐字时间；已有时间不会被覆盖';
+  $('transcribe').disabled = !p?.assets.source || !!activeJob || !!p?.source_issue;
   $('batch').textContent = '生成 ' + pending + ' 句'; $('batch').disabled = !pending || !!activeJob || !modelReady || !!p?.source_issue;
   $('batch').title = p?.source_issue || '';
   $('versionRendered').disabled = !p?.rendered_available;
+  $('versionSvc').disabled = $('exportSvc').disabled = !p?.svc_available;
+  $('exportSvcMix').disabled = !p?.svc_mixed_available;
+  $('startSvc').disabled = !p?.assets.source || !!activeJob || !!p?.source_issue;
   $('exportVoice').disabled = $('exportMix').disabled = !p?.rendered_available || !p?.render_complete;
   if (!p?.assets.accompaniment) $('exportMix').disabled = true;
-  ['importSource', 'importAccompaniment', 'importLyrics', 'exportLyrics'].forEach(id => $(id).disabled = !p);
+  ['importSong', 'importSource', 'importAccompaniment', 'importLyrics', 'exportLyrics'].forEach(id => $(id).disabled = !p);
   $('seek').max = duration(); updateClock();
 }
 function pause() {
@@ -249,9 +258,11 @@ function ensureWordWave() {
 async function loadAudio(position = 0, resume = false) {
   pause(); const p = project(), revision = ++waveRevision;
   if (activeVoice === 'rendered' && !p?.rendered_available) activeVoice = 'source';
+  if (activeVoice === 'svc' && !p?.svc_available) activeVoice = 'source';
   document.querySelectorAll('[data-version]').forEach(b => b.classList.toggle('chosen', b.dataset.version === activeVoice));
   for (const [kind, audio, selector] of [['source', source, '1'], ['accompaniment', accompaniment, '2']]) {
-    const asset = kind === 'source' && activeVoice === 'rendered' ? {id: p.composite.rendered, name: '改词演唱', duration: p.duration} : p?.assets[kind];
+    const asset = kind === 'source' && activeVoice === 'rendered' ? {id: p.composite.rendered, name: '改词演唱', duration: p.duration}
+      : kind === 'source' && activeVoice === 'svc' ? {id:p.svc.asset_id,name:'音色转换',duration:p.duration} : p?.assets[kind];
     if (asset) {
       audio.onloadedmetadata = () => {
         if (revision !== waveRevision) return;
@@ -271,7 +282,7 @@ async function loadAudio(position = 0, resume = false) {
       }
     }).catch(() => { if (revision === waveRevision) drawWave(el, null, '波形暂不可用'); });
   }
-  $('voiceLabel').textContent = activeVoice === 'rendered' ? '改词演唱（未生成部分保留原唱）' : p?.assets.source?.name || '未导入原唱';
+  $('voiceLabel').textContent = activeVoice === 'rendered' ? '改词演唱（未生成部分保留原唱）' : activeVoice === 'svc' ? '音色转换' : p?.assets.source?.name || '未导入原唱';
   document.querySelector('.track:nth-child(2) small').textContent = p?.assets.accompaniment?.name || '未导入伴奏';
   $('seek').value = position; updateClock();
 }
@@ -356,6 +367,15 @@ $('batchAlign').onclick = () => {
     if(p.lines.filter(x=>x.alignment_state!=='ready').length>100)toast('本次提取前 100 句；完成后可再次点击处理剩余句子。');
   });
 };
+$('transcribe').onclick = () => {
+  const p=project();if(!p?.assets.source)return;
+  if(p.lines.length&&!confirm('自动识词将替换本工程现有歌词和改词编辑。请确认已备份或导出歌词，是否继续？'))return;
+  mutate(async()=>{
+    activeJob=await api('projects/'+p.id+'/transcription',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({revision:p.revision,replace:!!p.lines.length})});
+    render();pollJob();
+  });
+};
 
 $('theme').onclick = () => { const dark = document.body.classList.toggle('dark'); $('theme').textContent = dark ? '☀ 白天' : '☾ 夜间'; };
 document.querySelectorAll('[data-info]').forEach(b => b.onclick = () => toast(b.dataset.info));
@@ -382,6 +402,17 @@ $('confirmCreate').onclick = () => {
 };
 $('projectSelect').onchange = e => switchProject(+e.target.value);
 function chooseAudio(kind) { if (busy || !project()) return; importKind = kind; $('audioFile').value = ''; $('audioFile').click(); }
+$('importSong').onclick = () => {
+  if(activeJob){toast('当前模型任务尚未完成。');return;}
+  if(project()?.assets.source && !confirm('分离成功后会替换当前人声与伴奏，相关歌词对齐和生成结果需要重新处理。是否继续？'))return;
+  chooseAudio('song');
+};
+$('startSvc').onclick = () => {
+  if(activeJob){toast('当前模型任务尚未完成。');return;}
+  svcTargetKind=activeVoice==='rendered'?'rendered':'source';
+  toast('请选择 1–30 秒清晰参考人声，将转换当前'+(svcTargetKind==='rendered'?'改词演唱':'原唱人声')+'。');
+  chooseAudio('reference');
+};
 $('importSource').onclick = () => chooseAudio('source'); $('importAccompaniment').onclick = () => chooseAudio('accompaniment');
 async function audioDuration(file) {
   const url = URL.createObjectURL(file), audio = new Audio();
@@ -398,10 +429,18 @@ $('audioFile').onchange = () => {
   mutate(async () => {
     if (file.size > 512 * 1024 * 1024) throw new Error('文件不能超过 512 MB。');
     const seconds = await audioDuration(file), p = project();
-    if (importKind === 'source' && p.lines.some(x => x.end > seconds + .001)) throw new Error('新音频比已有歌词短，请创建新工程导入，避免损坏时间轴。');
+    if(importKind==='reference' && (seconds<1 || seconds>30))throw new Error('参考人声需要 1–30 秒，请裁剪后重试。');
+    if ((importKind === 'source' || importKind === 'song') && p.lines.some(x => x.end > seconds + .001)) throw new Error('新音频比已有歌词短，请创建新工程导入，避免损坏时间轴。');
     const updated = await api('projects/' + p.id + '/assets/' + importKind, {method: 'POST', headers: {
       'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name), 'X-Project-Revision': String(p.revision), 'X-Audio-Duration': String(seconds)}, body: file});
-    replaceProject(updated); loadAudio(); toast('音频已复制到本机工程，可以试听。');
+    replaceProject(updated);
+    if(importKind === 'song') {
+      activeJob=await api('projects/'+updated.id+'/separation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:updated.revision})});
+      render(); pollJob(); toast('歌曲已导入，正在分离人声和伴奏。');
+    } else if(importKind==='reference') {
+      activeJob=await api('projects/'+updated.id+'/svc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:updated.revision,target_kind:svcTargetKind})});
+      render();pollJob();toast('参考人声已导入，正在转换音色。');
+    } else { loadAudio(); toast('音频已复制到本机工程，可以试听。'); }
   });
 };
 $('importLyrics').onclick = () => { if (busy || !project()) return; if (!project().assets.source) { toast('请先导入原唱音频，以确定时间轴长度。'); return; } $('lyricsFile').value = ''; $('lyricsFile').click(); };
@@ -475,6 +514,7 @@ function renderTimeline() {
   $('timelineOriginal').value=line.original;
   const timings=line.unit_timings||[];
   $('timelineHint').textContent=timings.length ? '已保存逐字时间 · '+({manual:'手动校正',HubertFA:'歌声对齐',Qwen:'自动对齐'}[line.alignment_engine]||'已对齐')+' · 手动保存会使旧生成过期。' : '还没有真实逐字时间，请提取；主界面暂按单位数估算定位。';
+  if(line.needs_review) $('timelineHint').textContent='自动识词草稿，请校对原词和整句边界，确认后点击保存原词校正。'+$('timelineHint').textContent;
   $('extractWords').disabled=!!activeJob||!modelReady||!!p.source_issue;
   $('extractWords').title=p.source_issue||'';
   $('cancelAlignment').hidden=!activeJob || activeJob.kind!=='align';
@@ -500,6 +540,8 @@ function renderTimeline() {
     row.append(button,start,divider,end);$('wordTimeline').append(row);
   });
   $('saveWordTimes').disabled=!timings.length||!!activeJob;
+  $('splitPhrase').disabled=!!activeJob||lyricUnits(line.original).length<2;
+  $('mergePhrase').disabled=!!activeJob||timelineSelected>=p.lines.length-1;
   ensureWordWave(); refreshWordWave();
 }
 $('timelineOriginal').oninput=()=>{timelineDirty=true;};
@@ -513,11 +555,11 @@ $('timelineEditor').addEventListener('cancel',event=>{
 });
 $('saveOriginal').onclick=()=>{
   const line=project().lines[timelineSelected], text=$('timelineOriginal').value.trim();
-  if(text===line.original){toast('原词没有变化；如调整了逐字时间，请点击保存逐字时间。');return;}
+  if(text===line.original && !line.needs_review){toast('原词没有变化；如调整了逐字时间，请点击保存逐字时间。');return;}
   const rows=Array.from($('wordTimeline').children), saved=line.unit_timings||[];
   const timesChanged=rows.length===saved.length && rows.some((row,i)=>
     row.querySelector('.word-start').value!==saved[i].start.toFixed(3) || row.querySelector('.word-end').value!==saved[i].end.toFixed(3));
-  if(timesChanged&&!confirm('保存原词会清除当前句的旧对齐，尚未保存的逐字时间也会丢失。是否继续？'))return;
+  if(timesChanged&&!confirm(text===line.original ? '确认原词会放弃尚未保存的逐字时间。是否继续？' : '保存原词会使当前句的旧对齐失效，尚未保存的逐字时间也会丢失。是否继续？'))return;
   mutate(async()=>{
   const p=project(),line=p.lines[timelineSelected];
   const updated=await api('projects/'+p.id+'/segments/'+line.id+'/original',{
@@ -548,8 +590,42 @@ $('openPhraseEditor').onclick=()=>{
   if(timelineDirty&&!confirm('放弃尚未保存的修改并打开整句编辑？'))return;
   const index=timelineSelected;timelineDirty=false;$('timelineEditor').close();openEdit(index);
 };
+$('splitPhrase').onclick=()=>{
+  if(timelineDirty&&!confirm('拆分将放弃尚未保存的修改，是否继续？'))return;
+  const line=project().lines[timelineSelected], original=lyricUnits(line.original), replacement=lyricUnits(line.text);
+  if(original.length!==replacement.length){toast('原词和新词单位数不同，请先调整到一致后再拆分。');return;}
+  const select=$('splitPosition');select.replaceChildren();
+  for(let i=1;i<original.length;i++){
+    const option=document.createElement('option');option.value=i;option.textContent=original.slice(0,i).join('')+' ｜ '+original.slice(i).join('');select.append(option);
+  }
+  select.value=String(Math.floor(original.length/2));
+  select.onchange=()=>{
+    const i=+select.value,t=line.unit_timings||[];
+    const estimated=t.length===original.length?(t[i-1].end+t[i].start)/2:line.start+(line.end-line.start)*i/original.length;
+    $('splitTime').min=(line.start+.12).toFixed(3);$('splitTime').max=(line.end-.12).toFixed(3);
+    $('splitTime').value=Math.max(line.start+.12,Math.min(line.end-.12,estimated)).toFixed(3);
+    $('splitPreview').textContent='新词：'+replacement.slice(0,i).join('')+' ｜ '+replacement.slice(i).join('')+'；拆分后需要重新对齐和生成。';
+  };
+  select.onchange();$('splitDialog').showModal();
+};
+$('cancelSplit').onclick=()=>$('splitDialog').close();
+$('confirmSplit').onclick=()=>mutate(async()=>{
+  const p=project(),line=p.lines[timelineSelected];
+  const value={revision:p.revision,action:'split',position:+$('splitPosition').value,time:+$('splitTime').value};
+  const saved=await api('projects/'+p.id+'/segments/'+line.id+'/structure',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});
+  timelineDirty=false;replaceProject(saved);renderTimeline();$('splitDialog').close();toast('已拆分；请检查两句边界并重新对齐。');
+});
+$('mergePhrase').onclick=()=>{
+  if(timelineDirty&&!confirm('合并将放弃尚未保存的修改，是否继续？'))return;
+  if(!confirm('将当前句与下一句合并，相关对齐和生成结果需要重新处理。是否继续？'))return;
+  mutate(async()=>{
+    const p=project(),line=p.lines[timelineSelected];
+    const saved=await api('projects/'+p.id+'/segments/'+line.id+'/structure',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:p.revision,action:'merge'})});
+    timelineDirty=false;replaceProject(saved);renderTimeline();toast('已合并；请检查边界并重新对齐。');
+  });
+};
 
-const STAGES = {starting:'启动模型进程', alignment_cached:'复用已保存的逐字时间', alignment:'原词逐字对齐', singing_alignment:'歌声逐字对齐', alignment_warning:'校验短音节边界', pitch:'提取旋律音高', notes:'提取音符与槽位', loading_singer:'加载演唱模型', generating:'生成演唱', composing:'拼接与混音', complete:'生成完成'};
+const STAGES = {starting:'启动模型进程', separation_decode:'读取歌曲', separation_vocal:'分离人声与伴奏', separation_dry:'人声去混响与回声', asr_decode:'读取人声', asr_load:'加载识词模型', asr_recognize:'识别歌词草稿', svc_pitch:'分析参考与目标人声音高', svc_load:'加载音色转换模型', svc_generate:'转换人声音色', svc_mix:'合成变声混音', alignment_cached:'复用已保存的逐字时间', alignment:'原词逐字对齐', singing_alignment:'歌声逐字对齐', alignment_warning:'校验短音节边界', pitch:'提取旋律音高', notes:'提取音符与槽位', loading_singer:'加载演唱模型', generating:'生成演唱', composing:'拼接与混音', complete:'任务完成'};
 async function startRender(ids) {
   const p = project();
   activeJob = await api('projects/' + p.id + '/renders', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:p.revision,segment_ids:ids})});
@@ -561,7 +637,7 @@ async function pollJob() {
   const panel = $('jobPanel'); panel.hidden = false;
   try {
     const job = await api('jobs/' + activeJob.id); activeJob = job;
-    $('cancelJob').textContent = job.kind === 'align' ? '取消对齐' : '取消生成';
+    $('cancelJob').textContent = job.kind === 'align' ? '取消对齐' : job.kind === 'separate' ? '取消分离' : job.kind === 'transcribe' ? '取消识词' : job.kind === 'svc' ? '取消音色转换' : '取消生成';
     $('jobStage').textContent = STAGES[job.stage] || job.stage;
     if ($('timelineEditor').open && !timelineDirty && !['succeeded','failed','cancelled','interrupted','stale'].includes(job.status)) $('timelineHint').textContent='正在'+(STAGES[job.stage]||job.stage)+'…';
     $('jobDetail').textContent = (job.position ? ' · 第 ' + job.position + ' / ' + job.total + ' 句' : '') + ' · 模型进程独立运行';
@@ -570,12 +646,13 @@ async function pollJob() {
       const p = project();
       if (p && p.id === job.project_id) {
         const latest = await api('projects/' + p.id); replaceProject(latest);
-        if (job.kind !== 'align' && job.status === 'succeeded' && latest.rendered_available) activeVoice = 'rendered';
+        if (job.kind === 'render' && job.status === 'succeeded' && latest.rendered_available) activeVoice = 'rendered';
+        if (job.kind === 'svc' && job.status === 'succeeded' && latest.svc_available) activeVoice = 'svc';
         if (job.kind !== 'align') loadAudio();
       }
       render();
       if ($('timelineEditor').open && !timelineDirty) renderTimeline();
-      toast(job.status === 'succeeded' ? (job.kind === 'align' ? '逐字时间已提取并保存。' : '真实演唱已生成，可切换原唱/改词试听。') + (job.warnings.length ? job.warnings.join(' ') : '') : job.error || '生成已取消。');
+      toast(job.status === 'succeeded' ? (job.kind === 'align' ? '逐字时间已提取并保存。' : job.kind === 'separate' ? '人声和伴奏已分离并导入工程。' : job.kind === 'transcribe' ? '已生成歌词草稿，请逐句校对原词和边界。' : job.kind === 'svc' ? '音色转换完成，可试听或导出。' : '真实演唱已生成，可切换原唱/改词试听。') + (job.warnings.length ? job.warnings.join(' ') : '') : job.error || '任务已取消。');
       return;
     }
     $('cancelJob').disabled = job.status === 'cancelled';
@@ -590,16 +667,20 @@ $('cancelJob').onclick = async () => {
 document.querySelectorAll('[data-version]').forEach(button => button.onclick = () => {
   const mode = button.dataset.version;
   if (mode === 'rendered' && !project()?.rendered_available) { toast('请先生成当前改词。'); return; }
+  if (mode === 'svc' && !project()?.svc_available) { toast('请先完成音色转换。'); return; }
   const position = source.currentTime || +$('seek').value, resume = !source.paused;
   activeVoice = mode; loadAudio(position, resume);
 });
-for (const [id, kind] of [['exportVoice','rendered'],['exportMix','mixed']]) {
+for (const [id, kind] of [['exportVoice','rendered'],['exportMix','mixed'],['exportSvc','svc'],['exportSvcMix','svc_mixed']]) {
   $(id).onclick = () => { const a = document.createElement('a'); a.href='/api/projects/'+project().id+'/exports/'+kind; a.download=kind+'.wav'; a.click(); };
 }
 $('runtimeInfo').onclick = async () => {
   try {
     const state = await api('runtime'); const root = $('runtimeDetails'); root.replaceChildren();
     const summary = document.createElement('p'); summary.textContent=state.ready?'模型文件已就绪，按需加载。':'模型环境不完整。';root.append(summary);
+    const separator = document.createElement('p'); separator.textContent = state.separation_ready ? '✓ 本地人声分离模型已就绪' : '人声分离模型未安装'; root.append(separator);
+    const recognizer = document.createElement('p'); recognizer.textContent = state.transcription_ready ? '✓ 本地歌词识别模型已就绪' : '歌词识别模型未安装'; root.append(recognizer);
+    const svc = document.createElement('p'); svc.textContent = state.svc_ready ? '✓ 本地音色转换模型已就绪' : '音色转换模型未安装'; root.append(svc);
     const aligner = document.createElement('p'); aligner.textContent = state.singing_aligner ? '✓ 歌声对齐模型 HubertFA 已就绪' : '歌声对齐组件未配置，将使用 Qwen 备用对齐'; root.append(aligner);
     for(const [name,ready] of Object.entries(state.checks)) {const p=document.createElement('p');p.textContent=(ready?'✓ ':'✕ ')+name;root.append(p);}
     for(const text of [state.limits, '权重目录：'+state.model_root,'推理代码：'+state.source_root]) {const p=document.createElement('p');p.textContent=text;root.append(p);}

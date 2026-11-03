@@ -15,8 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from backend.store import Conflict, Store, export_lrc, export_srt, parse_lyrics
 from backend.jobs import RenderJobs
 from backend.media import source_issue
-from backend.singing import fingerprint, composition_fingerprint, units
+from backend.singing import fingerprint, composition_fingerprint, svc_fingerprint, units
 from backend.timeline import alignment_fingerprint, cached_alignment, validate_timings
+from backend.phrases import split_phrase, merge_next
 from contextlib import asynccontextmanager
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +52,12 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             line['render_warning'] = ' '.join(take.get('warnings', [])) if valid else ''
         composite = p.get('composite', {})
         p['rendered_available'] = bool(composite.get('rendered') and composite.get('fingerprint') == composition_fingerprint(p))
+        svc=p.get('svc',{})
+        p['svc_available'] = bool(svc.get('asset_id') and svc.get('target_kind') in ('source','rendered')
+            and svc.get('fingerprint')==svc_fingerprint(p,svc['target_kind'])
+            and (svc['target_kind']!='rendered' or p['rendered_available']))
+        p['svc_mixed_available'] = bool(p['svc_available'] and svc.get('mixed_asset_id') and svc.get('accompaniment_id')
+            and svc['accompaniment_id']==p.get('assets',{}).get('accompaniment',{}).get('id'))
         p['render_complete'] = all(x['text'] == x['original'] or x['render_state'] == 'ready' for x in p['lines'])
         return p
 
@@ -137,7 +144,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
 
     @app.post('/api/projects/{project_id}/assets/{kind}')
     async def upload(project_id: str, kind: str, request: Request):
-        if kind not in ('source', 'accompaniment'):
+        if kind not in ('source', 'accompaniment', 'song', 'reference'):
             raise ValueError('无效的轨道类型。')
         store.get(project_id)
         name = request.headers.get('x-file-name', '')
@@ -179,7 +186,8 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     def runtime():
         with jobs.lock:
             active = jobs.get(jobs.active) if jobs.active else None
-        return {**jobs.runtime.status(), 'active_job': active}
+        return {**jobs.runtime.status(), 'separation_ready': bool(jobs.runtime.separation_config()),
+                'transcription_ready': bool(jobs.runtime.transcription_config()), 'svc_ready':bool(jobs.runtime.svc_config()), 'active_job': active}
 
     @app.get('/api/projects/{project_id}')
     def get_project(project_id: str):
@@ -194,6 +202,21 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     async def align(project_id: str, request: Request):
         value = await body(request)
         return jobs.submit(project_id,value.get('revision'),value.get('segment_ids'),kind='align')
+
+    @app.post('/api/projects/{project_id}/separation', status_code=202)
+    async def separate_song(project_id: str, request: Request):
+        value = await body(request)
+        return jobs.submit_separation(project_id, value.get('revision'))
+
+    @app.post('/api/projects/{project_id}/transcription', status_code=202)
+    async def transcribe_song(project_id: str, request: Request):
+        value = await body(request)
+        return jobs.submit_transcription(project_id, value.get('revision'), value.get('replace') is True)
+
+    @app.post('/api/projects/{project_id}/svc', status_code=202)
+    async def convert_voice(project_id: str, request: Request):
+        value=await body(request)
+        return jobs.submit_svc(project_id,value.get('revision'),value.get('target_kind'))
 
     @app.put('/api/projects/{project_id}/segments/{segment_id}/phrase')
     async def edit_phrase(project_id: str, segment_id: str, request: Request):
@@ -224,6 +247,21 @@ def create_app(data_root: Path | None = None) -> FastAPI:
                 following['start'] = end
             line.update(start=start, end=end, text=value.get('text'), mode=value.get('mode'), restore=value.get('restore'))
             return view(store.update(project_id, p))
+
+    @app.post('/api/projects/{project_id}/segments/{segment_id}/structure')
+    async def edit_phrase_structure(project_id: str, segment_id: str, request: Request):
+        value=await body(request)
+        with store.lock:
+            p=store.get(project_id)
+            if type(value.get('revision')) is not int or value['revision']!=p['revision']:
+                raise Conflict('工程已更新，请重新打开歌词编辑。')
+            if value.get('action')=='split':
+                split_phrase(p,segment_id,value.get('position'),value.get('time'))
+            elif value.get('action')=='merge':
+                merge_next(p,segment_id)
+            else:
+                raise ValueError('请选择拆分或合并。')
+            return view(store.update(project_id,p))
 
     @app.put('/api/projects/{project_id}/segments/{segment_id}/timeline')
     async def edit_word_times(project_id: str, segment_id: str, request: Request):
@@ -258,6 +296,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             if line['text'] == line['original']:
                 line['text'] = text
             line['original'] = text
+            line['needs_review'] = False
             return view(store.update(project_id,p))
 
     @app.get('/api/jobs/{job_id}')
@@ -270,9 +309,13 @@ def create_app(data_root: Path | None = None) -> FastAPI:
 
     @app.get('/api/projects/{project_id}/exports/{kind}')
     def export_audio(project_id: str, kind: str):
-        if kind not in ('rendered', 'mixed'):
+        if kind not in ('rendered', 'mixed', 'svc', 'svc_mixed'):
             raise ValueError('请选择演唱干声或混音。')
         p = view(store.get(project_id))
+        if kind in ('svc','svc_mixed'):
+            if not p['svc_available' if kind=='svc' else 'svc_mixed_available']:raise Conflict('音色转换结果不存在或已经过期。')
+            asset_id=p['svc']['asset_id' if kind=='svc' else 'mixed_asset_id']
+            return FileResponse(assets / asset_id,filename=kind+'.wav',media_type='audio/wav')
         if not p['rendered_available'] or not p['render_complete']:
             raise Conflict('仍有改词句未生成或音频已过期，请先完成生成。')
         asset_id = p['composite'].get(kind)

@@ -87,6 +87,16 @@ def repair_alignment(items, duration):
     return spans, len(bad)
 
 def composition_fingerprint(project):
-    payload = {'duration': round(float(project['duration']), 6), 'assets': {k: v.get('id') for k, v in project.get('assets', {}).items()},
+    payload = {'duration': round(float(project['duration']), 6), 'assets': {k: v.get('id') for k, v in project.get('assets', {}).items() if k in ('source','accompaniment')},
                'lines': [fingerprint(project, x) for x in project['lines']]}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def svc_fingerprint(project, target_kind):
+    if target_kind not in ('source','rendered'):
+        raise ValueError('无效的音色转换目标。')
+    target=(project.get('assets',{}).get('source',{}).get('id') if target_kind=='source'
+            else project.get('composite',{}).get('rendered'))
+    payload={'target_kind':target_kind,'target':target,'reference':project.get('assets',{}).get('reference',{}).get('id'),
+             'composition':composition_fingerprint(project) if target_kind=='rendered' else None}
+    return hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest()

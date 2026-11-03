@@ -41,6 +41,35 @@ class Runtime:
             return None
         return {'model': str(model), 'python': str(python), 'source': str(source)}
 
+    def separation_config(self):
+        root = self.studio / 'data/music'
+        files = [root / 'deps/pymss/__init__.py', root / 'deps/pymss_core/__init__.py',
+                 root / 'models/vocal/vocal_extraction/Kim_MelBandRoformer.ckpt',
+                 root / 'models/vocal/vocal_extraction/Kim_MelBandRoformer.yaml',
+                 root / 'models/reverb_echo_control/dereverb_deecho/dereverb-echo_mel_band_roformer_sdr_13.4843_v2.ckpt',
+                 root / 'models/reverb_echo_control/dereverb_deecho/dereverb-echo_mel_band_roformer_sdr_13.4843_v2.yaml', self.python]
+        if not all(p.is_file() for p in files):
+            return None
+        return {'deps': str(root / 'deps'), 'models': str(root / 'models')}
+
+    def transcription_config(self):
+        model = self.models / 'FireRedASR2-AED-FP16'
+        required = [model / x for x in ('model.pth.tar', 'configuration.json', 'dict.txt', 'cmvn.ark', 'train_bpe1000.model')]
+        return {'model': str(model)} if self.python.is_file() and all(x.is_file() for x in required) else None
+
+    def svc_config(self):
+        try:
+            version = json.loads((self.studio / 'runtime/components/svc/current.json').read_text(encoding='utf-8-sig'))['version']
+        except (OSError, ValueError, KeyError):
+            return None
+        if not isinstance(version,str) or not version or Path(version).name != version or '/' in version or '\\' in version:
+            return None
+        root=self.studio/'runtime/components/svc/versions'/version/'pretrained_models'
+        wrapper=self.studio/'backend/soulx_svc_model.py'
+        required=[root/'SoulX-Singer/model-svc.pt',root/'whisper-base/config.json',root/'whisper-base/model.safetensors',wrapper,self.python]
+        if not all(x.is_file() for x in required): return None
+        return {'svc_root':str(root),'svc_wrapper':str(wrapper),'core':str(self.core),'models':str(self.models)}
+
     def status(self):
         files = {
             'singer': self.models / 'SoulX-Singer/model.pt',
