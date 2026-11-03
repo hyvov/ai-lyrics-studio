@@ -45,12 +45,15 @@ function render() {
     button.className = 'project' + (i === current ? ' active' : '');
     const cover = document.createElement('span'); cover.className = 'cover'; cover.textContent = '♫';
     const title = document.createElement('div'); title.textContent = item.name;
-    const sub = document.createElement('small'); sub.textContent = item.lines.length + ' 句 · ' + item.lines.filter(x => x.render_state === 'ready').length + ' 已生成';
+    const sub = document.createElement('small'); sub.textContent = item.source_issue ? '仅功能测试 · 无演唱，不可生成' : item.lines.length + ' 句 · ' + item.lines.filter(x => x.render_state === 'ready').length + ' 已生成';
     title.append(sub); button.append(cover, title); button.onclick = () => switchProject(i);
     $('projects').append(button);
     const option = document.createElement('option'); option.value = i; option.textContent = item.name; option.selected = i === current;
     $('projectSelect').append(option);
   });
+  $('sourceIssue').hidden = !p?.source_issue;
+  $('sourceIssueText').textContent = p?.source_issue || '';
+  $('useSingingExample').hidden = !projects.some(x => !x.source_issue && x.rendered_available);
   $('counts').replaceChildren();
   if (p) [p.lines.length + ' 句歌词', p.lines.filter(changed).length + ' 处改词', p.lines.filter(x => x.render_state === 'ready').length + ' 已生成'].forEach(text => {
     const span = document.createElement('span'); span.textContent = text; $('counts').append(span);
@@ -80,7 +83,8 @@ function render() {
     copy.append(words, original, state); row.append(copy, edit); $('lyricsList').append(row);
   }
   const pending = p?.lines.filter(x => changed(x) && x.render_state !== 'ready').length || 0;
-  $('batch').textContent = '生成 ' + pending + ' 句'; $('batch').disabled = !pending || !!activeJob || !modelReady;
+  $('batch').textContent = '生成 ' + pending + ' 句'; $('batch').disabled = !pending || !!activeJob || !modelReady || !!p?.source_issue;
+  $('batch').title = p?.source_issue || '';
   $('versionRendered').disabled = !p?.rendered_available;
   $('exportVoice').disabled = $('exportMix').disabled = !p?.rendered_available || !p?.render_complete;
   if (!p?.assets.accompaniment) $('exportMix').disabled = true;
@@ -208,7 +212,8 @@ function openEdit(i) {
   $('newLyrics').value = line.text;
   for (const id of ['start', 'end', 'startRange', 'endRange']) { $(id).max = duration(); $(id).value = id.startsWith('start') ? line.start : line.end; }
   $('restore').checked = false;
-  $('regenerate').disabled = !!activeJob || !modelReady;
+  $('regenerate').disabled = !!activeJob || !modelReady || !!project()?.source_issue;
+  $('regenerate').title = project()?.source_issue || '';
   document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('chosen', b.dataset.mode === line.mode));
   validate(); $('edit').showModal();
 }
@@ -224,7 +229,7 @@ function validate() {
   $('slots').replaceChildren();
   chars.forEach((char, i) => { const slot = document.createElement('div'), label = document.createElement('small'); label.textContent = '字 ' + (i + 1); slot.append(label, document.createTextNode(char)); $('slots').append(slot); });
   $('slotHint').textContent = chars.length === n ? '字数一致；实际旋律槽位与发音适配仍需模型分析。' : '字数发生变化，实际分配需结合音符和发音。';
-  $('validation').textContent = ok ? '保存后写入本机工程。' : '歌词不能为空，边界须位于音频内且不能与相邻句重叠。';
+  $('validation').textContent = ok ? (p.source_issue ? '当前为无演唱测试音，只能编辑与试听，不能生成。' : '保存后写入本机工程。') : '歌词不能为空，边界须位于音频内且不能与相邻句重叠。';
   drawEditorWave(); return ok;
 }
 $('newLyrics').oninput = validate;
@@ -271,7 +276,7 @@ $('previewSegment').onclick = () => {
 };
 $('seek').oninput = () => { clipEnd = null; seek(+$('seek').value); };
 $('timeline').onclick = () => {
-  if (!project()?.lines.length) { toast('请先导入 LRC 歌词。'); return; }
+  if (!project()?.lines.length) { toast('请先导入 SRT 字幕或 LRC 歌词。'); return; }
   const i = project().lines.findIndex(x => +$('seek').value >= x.start && +$('seek').value < x.end);
   openEdit(i < 0 ? 0 : i);
 };
@@ -310,20 +315,38 @@ $('audioFile').onchange = () => {
     replaceProject(updated); loadAudio(); toast('音频已复制到本机工程，可以试听。');
   });
 };
-$('importLyrics').onclick = () => { if (busy || !project()) return; if (!project().assets.source) { toast('请先导入原唱音频，以确定时间轴长度。'); return; } $('lrcFile').value = ''; $('lrcFile').click(); };
-$('lrcFile').onchange = () => {
-  const file = $('lrcFile').files[0]; if (!file) return;
-  if (project().lines.length && !confirm('导入 LRC 会替换本工程的全部歌词编辑，是否继续？')) return;
+$('importLyrics').onclick = () => { if (busy || !project()) return; if (!project().assets.source) { toast('请先导入原唱音频，以确定时间轴长度。'); return; } $('lyricsFile').value = ''; $('lyricsFile').click(); };
+$('lyricsFile').onchange = () => {
+  const file = $('lyricsFile').files[0]; if (!file) return;
+  if (project().lines.length && !confirm('导入字幕或歌词会替换本工程的全部歌词编辑，是否继续？')) return;
   mutate(async () => {
-    if (file.size > 2 * 1024 * 1024) throw new Error('LRC 文件不能超过 2 MB。');
+    if (file.size > 2 * 1024 * 1024) throw new Error('字幕或歌词文件不能超过 2 MB。');
+    const format = file.name.match(/\.(srt|lrc)$/i)?.[1]?.toLowerCase() || 'auto';
     const p = project();
-    const updated = await api('projects/' + p.id + '/lyrics', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({revision: p.revision, text: await file.text()})});
-    selected = 0; replaceProject(updated); toast('LRC 时间轴已导入，可逐句修改。');
+    const updated = await api('projects/' + p.id + '/lyrics', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({revision: p.revision, format, text: await decodeSubtitle(file)})});
+    selected = 0; replaceProject(updated);
+    $('exportFormat').value = format === 'lrc' ? 'lrc' : 'srt';
+    toast('已导入 ' + updated.lines.length + ' 句；SRT 会保留原始起止时间与句间空隙。');
   });
 };
 $('exportLyrics').onclick = () => {
   if (!project()?.lines.length) { toast('请先导入歌词。'); return; }
-  const a = document.createElement('a'); a.href = '/api/projects/' + project().id + '/lyrics.lrc'; a.download = 'lyrics.lrc'; a.click();
+  const format = $('exportFormat').value;
+  const a = document.createElement('a'); a.href = '/api/projects/' + project().id + '/lyrics.' + format; a.download = 'lyrics.' + format; a.click();
+};
+async function decodeSubtitle(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le', {fatal:true}).decode(bytes);
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be', {fatal:true}).decode(bytes);
+  try { return new TextDecoder('utf-8', {fatal:true}).decode(bytes); }
+  catch (_) {
+    try { return new TextDecoder('gb18030', {fatal:true}).decode(bytes); }
+    catch (_) { throw new Error('无法识别字幕编码，请另存为 UTF-8 后导入。'); }
+  }
+}
+$('useSingingExample').onclick = () => {
+  const index = projects.findIndex(x => !x.source_issue && x.rendered_available);
+  if (index >= 0) switchProject(index);
 };
 async function init() {
   try {

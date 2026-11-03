@@ -143,3 +143,72 @@ def export_lrc(project: dict) -> str:
         content = line['text'].replace('<SP>', '').replace('\r', ' ').replace('\n', ' ')
         rows.append(f'[{minutes:02d}:{seconds:02d}.{fraction:02d}]{content}')
     return '\n'.join(rows) + '\n'
+
+
+def parse_srt(text: str, duration: float) -> list:
+    """Preserve explicit caption boundaries and gaps; reject corrupt time axes."""
+    import html
+    normalized = text.lstrip('\ufeff').replace('\r\n', '\n').replace('\r', '\n').strip()
+    if not normalized:
+        raise ValueError('SRT 字幕为空。')
+    blocks = re.split(r'\n[ \t]*\n+', normalized)
+    if len(blocks) > 10000:
+        raise ValueError('字幕条数不能超过 10000。')
+    stamp = r'\d{1,3}:\d{2}:\d{2}[,.]\d{1,3}'
+    timing = re.compile(rf'^({stamp})\s*-->\s*({stamp})(?:\s+(?:X1|X2|Y1|Y2):\d+)*\s*$')
+
+    def seconds(value):
+        h, m, rest = value.split(':')
+        sec, fraction = re.split('[,.]', rest)
+        if int(m) >= 60 or int(sec) >= 60:
+            raise ValueError('SRT 的分钟和秒数必须小于 60。')
+        return round(int(h) * 3600 + int(m) * 60 + int(sec) + int(fraction) / 10 ** len(fraction), 3)
+
+    result, previous_end = [], 0.
+    for position, block in enumerate(blocks, 1):
+        rows = block.strip().split('\n')
+        if rows[0].strip().isdigit():
+            rows = rows[1:]
+        match = timing.fullmatch(rows[0].strip()) if rows else None
+        if not match:
+            raise ValueError(f'第 {position} 条 SRT 时间格式无效，应为 00:00:01,000 --> 00:00:03,000。')
+        a, b = seconds(match[1]), seconds(match[2])
+        if a >= b or b > duration + .001 or a < previous_end - .000001:
+            raise ValueError(f'第 {position} 条 SRT 时间倒置、超出音频或与前一条重叠；原有歌词未替换。')
+        content = '\n'.join(rows[1:])
+        content = re.sub(r'<br\s*/?>', '\n', content, flags=re.I)
+        content = re.sub(r'</?(?:b|i|u|s|font|span)\b[^>]*>', '', content, flags=re.I)
+        content = re.sub(r'\{\\[^}]+\}', '', content)
+        content = ' '.join(line.strip() for line in html.unescape(content).splitlines() if line.strip())
+        if not content or not content.replace('<SP>', '').strip():
+            raise ValueError(f'第 {position} 条 SRT 字幕没有歌词文本。')
+        result.append(dict(id=uuid4().hex, original=content, text=content, start=a, end=b, mode='melody', restore=False))
+        previous_end = b
+    return result
+
+
+def parse_lyrics(text: str, duration: float, format_name=None) -> list:
+    if format_name is not None and not isinstance(format_name, str):
+        raise ValueError('歌词格式须为 SRT 或 LRC。')
+    kind = (format_name or '').lower().lstrip('.')
+    if kind in ('', 'auto'):
+        kind = 'srt' if '-->' in text else 'lrc'
+    if kind == 'srt':
+        return parse_srt(text, duration)
+    if kind == 'lrc':
+        return parse_lrc(text.lstrip('\ufeff'), duration)
+    raise ValueError('仅支持 SRT 字幕或 LRC 歌词。')
+
+
+def export_srt(project: dict) -> str:
+    def stamp(seconds):
+        total = round(seconds * 1000)
+        hours, total = divmod(total, 3600000)
+        minutes, total = divmod(total, 60000)
+        secs, millis = divmod(total, 1000)
+        return f'{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}'
+    blocks = []
+    for i, line in enumerate(project['lines'], 1):
+        text = '\n'.join(row.strip() for row in line['text'].replace('<SP>', '').splitlines() if row.strip())
+        blocks.append(f"{i}\n{stamp(line['start'])} --> {stamp(line['end'])}\n{text}")
+    return '\n\n'.join(blocks) + ('\n' if blocks else '')

@@ -58,7 +58,7 @@ def repair_alignment(items, duration):
         raise ValueError('对齐时间超出片段。')
     bad = [i for i, (a, b) in enumerate(spans) if b - a < .02]
     if len(bad) > max(1, len(spans) // 3):
-        raise ValueError('过多歌词无法对齐，请校正原词、缩短句子或调整边界。')
+        raise ValueError('原唱与提供的原词未能成功对齐。请确认音频含有实际演唱，并核对原词和句子范围；单字改词也需要先完成原唱对齐。')
     for i in bad:
         a, b = spans[i]
         left = spans[i - 1] if i else None

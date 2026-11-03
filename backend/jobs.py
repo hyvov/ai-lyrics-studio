@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from backend.runtime import ROOT, Runtime
+from backend.media import source_issue
 from backend.singing import composition_fingerprint, fingerprint, validate_render
 from backend.store import Conflict
 
@@ -51,6 +52,9 @@ class RenderJobs:
             p = self.store.get(project_id)
             if type(revision) is not int or revision != p['revision']:
                 raise Conflict('工程已更新，请刷新后再生成。')
+            issue = source_issue(p, self.assets)
+            if issue:
+                raise ValueError(issue)
             selected = validate_render(p, segment_ids)
             self.runtime.require()
             job_id = uuid4().hex

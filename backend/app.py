@@ -12,8 +12,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from backend.store import Conflict, Store, export_lrc, parse_lrc
+from backend.store import Conflict, Store, export_lrc, export_srt, parse_lyrics
 from backend.jobs import RenderJobs
+from backend.media import source_issue
 from backend.singing import fingerprint, composition_fingerprint
 from contextlib import asynccontextmanager
 
@@ -37,6 +38,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
     def view(p):
+        p['source_issue'] = source_issue(p, assets)
         for line in p['lines']:
             take = p.get('renders', {}).get(line['id'])
             valid = take and take['fingerprint'] == fingerprint(p, line)
@@ -115,14 +117,18 @@ def create_app(data_root: Path | None = None) -> FastAPI:
         value = await body(request)
         p = store.get(project_id)
         if not isinstance(value.get('text'), str):
-            raise ValueError('请提供 LRC 文本。')
-        p['lines'] = parse_lrc(value['text'], p['duration'])
+            raise ValueError('请提供 SRT 或 LRC 文本。')
+        p['lines'] = parse_lyrics(value['text'], p['duration'], value.get('format'))
         p['revision'] = value.get('revision')
         return view(store.update(project_id, p))
 
     @app.get('/api/projects/{project_id}/lyrics.lrc')
     def export(project_id: str):
         return Response(export_lrc(store.get(project_id)), media_type='text/plain; charset=utf-8', headers={'Content-Disposition': 'attachment; filename="lyrics.lrc"'})
+
+    @app.get('/api/projects/{project_id}/lyrics.srt')
+    def export_subtitles(project_id: str):
+        return Response(export_srt(store.get(project_id)), media_type='application/x-subrip; charset=utf-8', headers={'Content-Disposition': 'attachment; filename="lyrics.srt"'})
 
     @app.post('/api/projects/{project_id}/assets/{kind}')
     async def upload(project_id: str, kind: str, request: Request):
