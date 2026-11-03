@@ -15,7 +15,7 @@
 ## 已实现的链路
 
 1. 从本工具的音频副本裁剪当前句。
-2. 本地 Qwen3-ForcedAligner 为已校对原词定位时间；少量零时长音节按邻近边界修复并记录提示，严重异常报错。
+2. 优先使用共享 HubertFA ONNX 歌声对齐模型，为已校对原词定位时间；不可用或校验失败时尝试 Qwen3-ForcedAligner。少量零时长音节按邻近边界修复并记录提示，严重异常报错。
 3. RMVPE 提取连续 F0。
 4. ROSVOT 在对齐的字词时长下提取音高与连音音符；按原词起音与延音关系映射新词。
 5. G2P 生成原词和新词发音，保留音符持续时间、音高与停顿。
@@ -38,3 +38,14 @@
 已使用官方 `example/audio/zh_prompt.mp3` 完成 10 秒中文改词生成，验证 24 kHz PCM 输出、有限幅度和非静音信号。也从页面启动任务，验证生成完成状态、改词轨、音频导出及混音文件。演唱质量需要人工试听，不将文件生成成功视为音色或吐字质量的证明。
 
 首版不支持自动分离、自动识词、跨字数改词、粤语、SVC 或完整 MIDI 钢琴卷帘编辑。共享模型版本若更换，应重新测试并重新生成已有产物。
+
+
+## 歌声对齐模型适配
+
+真实快唱片段暴露出 Qwen 大量返回零时长字的问题。现在使用 Studio 已有的 `runtime/components/hfa/versions/1.0.0/model` 与对应 `python` 只读依赖，独立运行 HFA 声学对齐。权重约 415 MB，没有复制或重新下载。
+
+解码器和发音词典转换代码来自独立的 [Xiantaidu/Vocal2Midi](https://github.com/Xiantaidu/Vocal2Midi) checkout，固定提交 `e46590b490fca790e6cd2dacbc0bb7779babe383`，Apache-2.0。完整 LICENSE 留在 checkout 内。HFA 模型来源：[wolfgitpr/HubertFA v0.0.7](https://github.com/wolfgitpr/HubertFA/releases/tag/v0.0.7)，模型格式要求 VERSION 5；共享模型自带词典保留原许可。本工具不导入 Studio 的后端适配器。
+
+`backend/hfa.py` 是自写的模型桥接，支持中文拼音与英文词典混合映射并保留单词索引。CPU 使用 ONNX Runtime 的两条计算线程，Qwen 按需加载。缺词、数量不符、非有限边界、过多零时长等仍按原校验拒绝，不会任意填充整句时间。
+
+用户失败片段中，旧方式在 13 字中产生过多无时长项；HFA 返回 13 个有效正时长边界。已验证该片段的真实生成，以及页面工程的演唱/混音 WAV（24 kHz）导出。对齐模型置信度仅为模型统计，不能等同于听感或精确度证明；仍需试听。

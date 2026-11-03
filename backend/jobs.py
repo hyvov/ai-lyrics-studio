@@ -67,7 +67,7 @@ class RenderJobs:
             self._persist(job)
             config = {'core': str(self.runtime.core), 'models': str(self.runtime.models), 'job_dir': str(directory.resolve()),
                       'source': str((self.assets / p['assets']['source']['id']).resolve()), 'segments': selected,
-                      'existing_takes': []}
+                      'existing_takes': [], 'hfa': self.runtime.hfa_config()}
             if p['assets'].get('accompaniment'):
                 config['accompaniment'] = str((self.assets / p['assets']['accompaniment']['id']).resolve())
             for line in p['lines']:

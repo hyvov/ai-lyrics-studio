@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from backend.runtime import ROOT, Runtime, UPSTREAM_COMMIT
+from backend.runtime import ROOT, Runtime, UPSTREAM_COMMIT, HFA_COMMIT
 
 
 def system_proxy():
@@ -37,6 +37,16 @@ def main():
     actual = subprocess.check_output(['git', '-C', str(runtime.core), 'rev-parse', 'HEAD'], text=True).strip()
     if actual != UPSTREAM_COMMIT:
         raise SystemExit('上游代码版本不匹配；请指定独立的 SOULX_SOURCE_ROOT 后重新配置，现有代码未被覆盖。')
+    hfa_model = Path(os.environ.get('SOULX_HFA_MODEL', runtime.studio / 'runtime/components/hfa/versions/1.0.0/model'))
+    if (hfa_model / 'model.onnx').is_file():
+        hfa_source = Path(os.environ.get('SOULX_HFA_SOURCE', ROOT / 'runtime/Vocal2Midi'))
+        if not hfa_source.exists():
+            subprocess.run(git + ['clone', '--filter=blob:none', '--no-checkout', 'https://github.com/Xiantaidu/Vocal2Midi.git', str(hfa_source)], check=True)
+            subprocess.run(['git', '-C', str(hfa_source), 'sparse-checkout', 'set', 'inference/HubertFA/tools'], check=True)
+            subprocess.run(git + ['-C', str(hfa_source), 'checkout', '--detach', HFA_COMMIT], check=True)
+        actual = subprocess.check_output(['git', '-C', str(hfa_source), 'rev-parse', 'HEAD'], text=True).strip()
+        if actual != HFA_COMMIT:
+            raise SystemExit('歌声对齐代码版本不匹配，未覆盖现有代码；请指定独立的 SOULX_HFA_SOURCE。')
     command = [sys.executable, '-m', 'pip', '--python', str(runtime.python), 'install', '--target', str(ROOT / 'runtime/worker-deps'),
                '--upgrade', '--no-deps', '-r', str(ROOT / 'requirements-worker.txt')]
     if proxy:

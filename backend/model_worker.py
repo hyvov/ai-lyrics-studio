@@ -65,12 +65,14 @@ def adapt_llama():
     LlamaNARDecoderLayer.forward = forward
 
 
-def align_words(aligner, waveform, text, sr):
+def align_words(aligner, waveform, text, sr, diagnostic_path=None):
     import numpy as np
     original = units(text)
     # The aligner accepts a space separated mixed-language transcript and returns
     # CJK characters / English words, in seconds relative to this cropped audio.
     result = aligner.align(audio=(waveform, sr), text=' '.join(original), language='Chinese')[0]
+    if diagnostic_path:
+        Path(diagnostic_path).write_text(json.dumps({'engine': type(aligner).__name__, 'confidence': getattr(result, 'confidence', None), 'words': [{'text': x.text, 'start': float(x.start_time), 'end': float(x.end_time)} for x in result.items]}, ensure_ascii=False), encoding='utf-8')
     if len(result.items) != len(original):
         raise ValueError('逐字对齐数量与原词不符，请校正原词或调整句子边界。')
     duration = len(waveform) / sr
@@ -122,19 +124,39 @@ def run(config):
     audio, sr = librosa.load(config['source'], sr=24000, mono=True)
     segments = config['segments']
     prepared = []
-    from qwen_asr import Qwen3ForcedAligner
-    report('alignment')
-    aligner = Qwen3ForcedAligner.from_pretrained(str(models / 'Qwen3-ForcedAligner-0.6B'),
-                                                dtype=torch.float16, device_map=device, local_files_only=True)
-    for line in segments:
+    hfa, qwen = None, None
+    if config.get('hfa'):
+        try:
+            from backend.hfa import HfaAligner
+            hfa = HfaAligner(config['hfa'])
+        except Exception as exc:
+            report('alignment_warning', message='歌声对齐组件不可用，改用备用对齐：' + str(exc))
+    for position, line in enumerate(segments, 1):
         crop = audio[round(line['start'] * sr):round(line['end'] * sr)]
         if len(crop) < sr or np.max(np.abs(crop)) < .001:
             raise ValueError('当前句音频过短或接近静音，请调整边界。')
-        words, spans, indices = align_words(aligner, crop, line['original'], sr)
+        aligned = None
+        if hfa is not None:
+            report('singing_alignment', segment_id=line['id'], position=position, total=len(segments))
+            try:
+                aligned = align_words(hfa, crop, line['original'], sr, jobdir / (line['id'] + '-hfa-alignment.json'))
+            except Exception as exc:
+                report('alignment_warning', message=f'第 {position} 句歌声对齐未通过校验，尝试备用模型：{exc}')
+        if aligned is None:
+            report('alignment', segment_id=line['id'], position=position, total=len(segments))
+            if qwen is None:
+                from qwen_asr import Qwen3ForcedAligner
+                qwen = Qwen3ForcedAligner.from_pretrained(str(models / 'Qwen3-ForcedAligner-0.6B'),
+                                                        dtype=torch.float16, device_map=device, local_files_only=True)
+            try:
+                aligned = align_words(qwen, crop, line['original'], sr, jobdir / (line['id'] + '-qwen-alignment.json'))
+            except ValueError as exc:
+                raise ValueError(f'第 {position} 句对齐失败：{exc}') from exc
+        words, spans, indices = aligned
         path = jobdir / (line['id'] + '-reference.wav')
         sf.write(path, crop, sr)
         prepared.append((line, path, crop, words, spans, indices))
-    del aligner
+    del hfa, qwen
     clear_gpu()
 
     report('pitch')

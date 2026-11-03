@@ -360,7 +360,7 @@ async function init() {
     render(); document.querySelector('.badge').textContent = '服务未连接'; toast('请运行 python -m backend.app，再打开本机服务地址。');
   }
 }
-const STAGES = {starting:'启动模型进程', alignment:'原词逐字对齐', alignment_warning:'校验短音节边界', pitch:'提取旋律音高', notes:'提取音符与槽位', loading_singer:'加载演唱模型', generating:'生成演唱', composing:'拼接与混音', complete:'生成完成'};
+const STAGES = {starting:'启动模型进程', alignment:'原词逐字对齐', singing_alignment:'歌声逐字对齐', alignment_warning:'校验短音节边界', pitch:'提取旋律音高', notes:'提取音符与槽位', loading_singer:'加载演唱模型', generating:'生成演唱', composing:'拼接与混音', complete:'生成完成'};
 async function startRender(ids) {
   const p = project();
   activeJob = await api('projects/' + p.id + '/renders', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:p.revision,segment_ids:ids})});
@@ -408,6 +408,7 @@ $('runtimeInfo').onclick = async () => {
   try {
     const state = await api('runtime'); const root = $('runtimeDetails'); root.replaceChildren();
     const summary = document.createElement('p'); summary.textContent=state.ready?'模型文件已就绪，按需加载。':'模型环境不完整。';root.append(summary);
+    const aligner = document.createElement('p'); aligner.textContent = state.singing_aligner ? '✓ 歌声对齐模型 HubertFA 已就绪' : '歌声对齐组件未配置，将使用 Qwen 备用对齐'; root.append(aligner);
     for(const [name,ready] of Object.entries(state.checks)) {const p=document.createElement('p');p.textContent=(ready?'✓ ':'✕ ')+name;root.append(p);}
     for(const text of [state.limits, '权重目录：'+state.model_root,'推理代码：'+state.source_root]) {const p=document.createElement('p');p.textContent=text;root.append(p);}
     $('runtimeDialog').showModal();
