@@ -3,6 +3,7 @@ const source = new Audio(), accompaniment = new Audio();
 source.preload = accompaniment.preload = 'metadata';
 let projects = [], current = 0, selected = 0, token = '', busy = false;
 let activeVoice = 'source', activeJob = null, pollTimer = null, modelReady = false, svcReady = false;
+let voiceBeforeEditor = null;
 let timelineSelected = 0, timelineDirty = false;
 const lyricUnits = text => text.replaceAll('<SP>', ' ').match(/[\u4e00-\u9fff]|[A-Za-z]+(?:'[A-Za-z]+)*/g) || [];
 let importKind = 'source', toastTimer, clipEnd = null, waveRevision = 0, playbackFrame;
@@ -309,13 +310,24 @@ async function loadAudio(position = 0, resume = false) {
 }
 function switchProject(i) {
   if (busy) { toast('当前操作尚未完成。'); return; }
-  current = i; selected = 0; activeVoice = 'source'; render(); loadAudio();
+  current = i; selected = 0; activeVoice = project()?.rendered_available ? 'rendered' : 'source'; render(); loadAudio();
+}
+function enterOriginalEditor() {
+  if (!voiceBeforeEditor) voiceBeforeEditor = {projectId: project()?.id, voice: activeVoice};
+  if (activeVoice !== 'source') { const position = source.currentTime || +$('seek').value; activeVoice = 'source'; loadAudio(position); }
+}
+function leaveOriginalEditor() {
+  const previous = voiceBeforeEditor; voiceBeforeEditor = null;
+  if (previous?.projectId === project()?.id) {
+    activeVoice = previous.voice;
+    loadAudio(source.currentTime || +$('seek').value);
+  }
 }
 function openEdit(i) {
   if (busy) return;
   const line = project()?.lines[i]; if (!line) return;
   selected = i; render(); pause();
-  if (activeVoice !== 'source') { activeVoice = 'source'; loadAudio(); }
+  enterOriginalEditor();
   $('editMeta').textContent = '第 ' + (i + 1) + ' 句 · ' + fmt(line.start) + ' — ' + fmt(line.end);
   $('sourceText').textContent = $('original').textContent = line.original;
   $('newLyrics').value = line.text;
@@ -353,7 +365,7 @@ $('save').onclick = () => {
   if (!validate()) return;
   mutate(async () => {
     const saved = await savePhrase();
-    replaceProject(saved); loadAudio(); $('edit').close(); toast('歌词与边界已保存到本机。');
+    replaceProject(saved); leaveOriginalEditor(); $('edit').close(); toast('歌词与边界已保存到本机。');
   });
 };
 function savePhrase() {
@@ -362,8 +374,8 @@ function savePhrase() {
     body:JSON.stringify({revision:p.revision,text:$('newLyrics').value,start:+$('start').value,end:+$('end').value,
       mode:document.querySelector('[data-mode].chosen').dataset.mode,restore:$('restore').checked})});
 }
-$('closeEdit').onclick = () => { if (!busy) { pause(); $('edit').close(); } };
-$('edit').addEventListener('cancel', event => { if (busy) event.preventDefault(); else pause(); });
+$('closeEdit').onclick = () => { if (!busy) { pause(); leaveOriginalEditor(); $('edit').close(); } };
+$('edit').addEventListener('cancel', event => { if (busy) event.preventDefault(); else { pause(); leaveOriginalEditor(); } });
 $('edit').addEventListener('close', pause);
 function syncRestore() {
   const score=document.querySelector('[data-mode].chosen')?.dataset.mode==='score';
@@ -380,7 +392,7 @@ $('regenerate').onclick = () => {
   mutate(async () => {
     const line = project().lines[selected];
     const saved = await savePhrase();
-    replaceProject(saved); $('edit').close(); pause();
+    replaceProject(saved); leaveOriginalEditor(); $('edit').close(); pause();
     await startRender([line.id]);
   });
 };
@@ -551,7 +563,7 @@ $('useSingingExample').onclick = () => {
 async function init() {
   try {
     const session = await api('session'); token = session.token; modelReady = session.capabilities.inference;
-    projects = await api('projects'); render(); loadAudio(); $('saveState').textContent = '本机服务已连接';
+    projects = await api('projects'); activeVoice = project()?.rendered_available ? 'rendered' : 'source'; render(); loadAudio(); $('saveState').textContent = '本机服务已连接';
     document.querySelector('.badge').textContent = modelReady ? '共用模型已就绪' : '模型环境待配置';
     const runtime = await api('runtime');
     svcReady=!!runtime.svc_ready;
@@ -565,8 +577,7 @@ function openTimeline() {
   if (!project()?.lines.length) { toast('请先导入 SRT / LRC。'); return; }
   if (busy) return;
   timelineSelected = Math.min(selected, project().lines.length-1); timelineDirty = false;
-  const position = +$('seek').value;
-  activeVoice = 'source'; loadAudio(position);
+  enterOriginalEditor();
   renderTimeline(); $('timelineEditor').showModal();
 }
 function renderTimeline() {
@@ -621,11 +632,11 @@ function renderTimeline() {
 $('timelineOriginal').oninput=()=>{timelineDirty=true;};
 $('closeTimeline').onclick=()=>{
   if(busy||timelineDirty&&!confirm('放弃尚未保存的时间轴修改？'))return;
-  timelineDirty=false;pause();$('timelineEditor').close();
+  timelineDirty=false;pause();leaveOriginalEditor();$('timelineEditor').close();
 };
 $('timelineEditor').addEventListener('cancel',event=>{
   if(busy||timelineDirty&&!confirm('放弃尚未保存的时间轴修改？'))event.preventDefault();
-  else{timelineDirty=false;pause();}
+  else{timelineDirty=false;pause();leaveOriginalEditor();}
 });
 $('saveOriginal').onclick=()=>{
   const line=project().lines[timelineSelected], text=$('timelineOriginal').value.trim();

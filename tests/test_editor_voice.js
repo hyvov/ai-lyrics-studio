@@ -1,0 +1,12 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const sourceCode = fs.readFileSync('design/studio.js', 'utf8');
+const helpers = sourceCode.slice(sourceCode.indexOf('function enterOriginalEditor()'), sourceCode.indexOf('function openEdit('));
+let activeVoice='rendered', voiceBeforeEditor=null, currentProject={id:'a',rendered_available:true}, position=1.25;
+const context={get activeVoice(){return activeVoice},set activeVoice(v){activeVoice=v},get voiceBeforeEditor(){return voiceBeforeEditor},set voiceBeforeEditor(v){voiceBeforeEditor=v},project:()=>currentProject,source:{currentTime:position},$:()=>({value:position}),loadAudio(p){position=p;if(activeVoice==='rendered'&&!currentProject.rendered_available)activeVoice='source'}};
+vm.createContext(context);vm.runInContext(helpers,context);
+context.enterOriginalEditor();assert.equal(activeVoice,'source');assert.equal(position,1.25);
+context.enterOriginalEditor();context.leaveOriginalEditor();assert.equal(activeVoice,'rendered');
+context.enterOriginalEditor();currentProject.rendered_available=false;context.leaveOriginalEditor();assert.equal(activeVoice,'source');
+console.log('Editor original playback and restoration passed');
