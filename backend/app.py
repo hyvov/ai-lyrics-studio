@@ -268,6 +268,46 @@ def create_app(data_root: Path | None = None) -> FastAPI:
                 raise ValueError('请选择拆分或合并。')
             return view(store.update(project_id,p))
 
+    @app.get('/api/projects/{project_id}/segments/{segment_id}/takes')
+    def list_takes(project_id: str, segment_id: str):
+        p=store.get(project_id)
+        line=next((x for x in p['lines'] if x['id']==segment_id),None)
+        if line is None:raise FileNotFoundError()
+        current=p.get('renders',{}).get(segment_id,{})
+        takes=[]
+        for take in reversed(p.get('render_history',[])):
+            if take.get('segment_id')!=segment_id:continue
+            asset_id=take.get('asset_id','')
+            import re
+            if not re.fullmatch(r'[a-f0-9]{32}\.wav',asset_id) or not (assets/asset_id).is_file():continue
+            takes.append({'asset_id':asset_id,'created_at':take.get('created_at'),
+                'lyrics':take.get('lyrics'),'mode':take.get('mode'),'warnings':take.get('warnings',[]),
+                'current':asset_id==current.get('asset_id'),'compatible':take.get('fingerprint')==fingerprint(p,line)})
+            if len(takes)>=100:break
+        return {'takes':takes}
+
+    @app.post('/api/projects/{project_id}/segments/{segment_id}/takes/{asset_id}/activate')
+    async def activate_take(project_id: str, segment_id: str, asset_id: str, request: Request):
+        import re
+        value=await body(request)
+        if not re.fullmatch(r'[a-f0-9]{32}\.wav',asset_id):raise FileNotFoundError()
+        with jobs.lock,store.lock:
+            if jobs.active:raise Conflict('当前有任务运行，请等待完成或取消后再切换版本。')
+            p=store.get(project_id)
+            if type(value.get('revision')) is not int or value['revision']!=p['revision']:
+                raise Conflict('工程已更新，请重新打开历史版本。')
+            line=next((x for x in p['lines'] if x['id']==segment_id),None)
+            if line is None:raise FileNotFoundError()
+            take=next((x for x in reversed(p.get('render_history',[])) if x.get('segment_id')==segment_id and x.get('asset_id')==asset_id),None)
+            if not take or not (assets/asset_id).is_file():raise FileNotFoundError()
+            if take.get('fingerprint')!=fingerprint(p,line):
+                raise Conflict('该版本对应的原词、新词、边界或素材已变化，不能直接套用。')
+            if p.get('renders',{}).get(segment_id,{}).get('asset_id')==asset_id:return view(p)
+            p.setdefault('renders',{})[segment_id]={k:take[k] for k in ('asset_id','fingerprint','job_id','warnings') if k in take}
+            p.pop('composite',None)
+            p['revision']+=1
+            return view(store._write(p))
+
     @app.put('/api/projects/{project_id}/segments/{segment_id}/timeline')
     async def edit_word_times(project_id: str, segment_id: str, request: Request):
         value = await body(request)

@@ -383,7 +383,9 @@ class RenderJobs:
                     shutil.copyfile(src, self.assets / asset_id); created.append(asset_id)
                     take = {'asset_id': asset_id, 'fingerprint': fingerprint(snapshot, line), 'job_id': job['id'], 'warnings': list(job['warnings'])}
                     current.setdefault('renders', {})[line['id']] = take
-                    current.setdefault('render_history', []).append({'segment_id': line['id'], **take})
+                    current.setdefault('render_history', []).append({'segment_id': line['id'], **take,
+                        'created_at':job.get('created_at'),
+                        'lyrics':line['text'],'original':line['original'],'start':line['start'],'end':line['end'],'mode':line['mode']})
                     accepted += 1
                 if not accepted:
                     self._set(job, status='stale', error='歌词或素材已修改，旧结果未覆盖当前工程。')

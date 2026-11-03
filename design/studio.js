@@ -114,7 +114,8 @@ function render() {
   $('versionSvc').disabled = $('exportSvc').disabled = !p?.svc_available;
   $('exportSvcMix').disabled = !p?.svc_mixed_available;
   $('startSvc').disabled = !p?.assets.source || !!activeJob || !!p?.source_issue;
-  $('recompose').disabled = !p?.assets.source || !p?.assets.accompaniment || !!activeJob || !p?.lines.some(x=>x.render_state==='ready');
+  $('recompose').disabled = !p?.assets.source || !!activeJob || !p?.lines.some(x=>x.render_state==='ready');
+  $('recompose').textContent = p?.assets.accompaniment ? '重新混音' : '重新合成';
   $('recompose').title = '复用已生成的唱句重新合成人声和伴奏，无需重新运行演唱模型';
   $('exportVoice').disabled = $('exportMix').disabled = !p?.rendered_available || !p?.render_complete;
   if (!p?.assets.accompaniment) $('exportMix').disabled = true;
@@ -555,6 +556,7 @@ function renderTimeline() {
   $('saveWordTimes').disabled=!timings.length||!!activeJob;
   $('splitPhrase').disabled=!!activeJob||lyricUnits(line.original).length<2;
   $('mergePhrase').disabled=!!activeJob||timelineSelected>=p.lines.length-1;
+  $('takeHistory').disabled=!!activeJob;
   ensureWordWave(); refreshWordWave();
 }
 $('timelineOriginal').oninput=()=>{timelineDirty=true;};
@@ -637,6 +639,36 @@ $('mergePhrase').onclick=()=>{
     timelineDirty=false;replaceProject(saved);renderTimeline();toast('已合并；请检查边界并重新对齐。');
   });
 };
+$('takeHistory').onclick=async()=>{
+  if(timelineDirty&&!confirm('切换历史版本会放弃尚未保存的时间轴修改，是否继续查看？'))return;
+  const p=project(),line=p.lines[timelineSelected];
+  try {
+    const result=await api('projects/'+p.id+'/segments/'+line.id+'/takes');
+    if(project()?.id!==p.id||project()?.lines[timelineSelected]?.id!==line.id)return;
+    const list=$('takeList');list.replaceChildren();pause();
+    if(!result.takes.length){const empty=document.createElement('p');empty.className='muted';empty.textContent='当前句还没有可试听的历史演唱。';list.append(empty);}
+    result.takes.forEach((take,i)=>{
+      const row=document.createElement('div');row.className='take-row';
+      const description=document.createElement('div');
+      const label=document.createElement('strong');label.textContent='版本 '+(result.takes.length-i)+(take.current?' · 当前使用':'');
+      const detail=document.createElement('p');detail.className='muted tiny';
+      detail.textContent=(take.created_at?new Date(take.created_at*1000).toLocaleString('zh-CN'):'历史版本')+' · '+(take.lyrics||'歌词信息未记录')+(take.compatible?'':' · 与当前歌词或边界不一致，仅可试听');
+      description.append(label,detail);
+      const audio=document.createElement('audio');audio.controls=true;audio.preload='none';audio.src='/api/assets/'+take.asset_id;audio.setAttribute('aria-label','试听版本 '+(result.takes.length-i));
+      const choose=document.createElement('button');choose.textContent=take.current?'使用中':'使用此版本';choose.disabled=take.current||!take.compatible||!!activeJob;
+      choose.onclick=()=>mutate(async()=>{
+        const current=project(),currentLine=current.lines[timelineSelected];
+        const updated=await api('projects/'+current.id+'/segments/'+currentLine.id+'/takes/'+take.asset_id+'/activate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:current.revision})});
+        timelineDirty=false;replaceProject(updated);renderTimeline();$('takeDialog').close();
+        await startCompose();toast('已切换演唱版本，正在重新合成音频。');
+      });
+      row.append(description,audio,choose);list.append(row);
+    });
+    $('takeDialog').showModal();
+  }catch(error){toast(error.message);}
+};
+$('closeTakes').onclick=()=>$('takeDialog').close();
+$('takeDialog').addEventListener('close',()=>document.querySelectorAll('#takeList audio').forEach(audio=>audio.pause()));
 
 const STAGES = {starting:'启动模型进程', separation_decode:'读取歌曲', separation_vocal:'分离人声与伴奏', separation_dry:'人声去混响与回声', asr_decode:'读取人声', asr_load:'加载识词模型', asr_recognize:'识别歌词草稿', svc_pitch:'分析参考与目标人声音高', svc_load:'加载音色转换模型', svc_generate:'转换人声音色', svc_mix:'合成变声混音', alignment_cached:'复用已保存的逐字时间', alignment:'原词逐字对齐', singing_alignment:'歌声逐字对齐', alignment_warning:'校验短音节边界', pitch_warning:'修复 MIDI 音高', pitch:'提取旋律音高', notes:'提取音符与槽位', loading_singer:'加载演唱模型', generating:'生成演唱', composing:'拼接与混音', complete:'任务完成'};
 async function startRender(ids) {
