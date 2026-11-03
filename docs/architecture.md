@@ -54,3 +54,14 @@ Job：id、type、project_id、segment_ids、status、stage、progress、error_c
 3. 素材导入、歌词校对和生成适配器。
 4. 接入编辑界面与真实音频播放。
 5. 拼接、混音、导出与端到端验收。
+
+
+## 当前实现（2026-11-03）
+
+已实现本地 FastAPI 服务与 JSON 工程存储。项目元数据通过同目录临时文件加原子替换写入；音频上传流式限额后生成受控资源 ID。更新工程和附加资源需要匹配 revision，冲突返回 409。媒体通过 FileResponse 提供 Range 请求。
+
+已实现 API：GET /api/session，GET/POST /api/projects，PUT /api/projects/{id}，POST /api/projects/{id}/assets/{kind}，POST /api/projects/{id}/lyrics，GET /api/projects/{id}/lyrics.lrc，GET /api/assets/{id}。
+
+服务仅监听回环地址，校验 Host、Origin 与写操作会话令牌；未启用跨域许可。界面与 API 同源。模型、后台任务与渲染版本状态机尚未实现，以上 API 草案中相应路径仍为规划。
+
+波形由浏览器解码原唱/伴奏计算，80 MB 以上跳过波形计算。上传最大 512 MB。歌词时长以音频元数据为准，导入 LRC 不触发模型推理。播放对齐采用同时间起点与漂移修正，不能补偿源素材自身偏移。
