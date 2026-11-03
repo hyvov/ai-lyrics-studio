@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Frontend
+node_modules/
+dist/
+build/
+
+# Local configuration
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db
+
+# Models, runtime, user media and generated output
+/models/
+/runtime/
+/data/
+/exports/
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.ckpt
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.mp4
+
+# Editors
+.idea/
+.vscode/
