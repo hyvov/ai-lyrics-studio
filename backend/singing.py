@@ -29,8 +29,8 @@ def validate_alignment(project, segment_ids):
     for line in selected:
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', line['id']):
             raise ValueError('歌词片段 ID 无效。')
-        if not 1 <= line['end']-line['start'] <= 20:
-            raise ValueError('每个片段须为 1–20 秒，请调整句子边界。')
+        if not .12-1e-9 <= line['end']-line['start'] <= 20:
+            raise ValueError('每个片段须为 0.12–20 秒，请调整句子边界。')
         units(line['original'])
     return selected
 

@@ -366,8 +366,8 @@ async function startCompose() {
 $('batchAlign').onclick = () => {
   const p=project(), lines=p.lines.filter(x=>x.alignment_state!=='ready').slice(0,100);
   if(!lines.length)return;
-  const invalid=lines.find(x=>x.end-x.start<1 || x.end-x.start>20);
-  if(invalid){toast('第 '+(p.lines.indexOf(invalid)+1)+' 句须为 1–20 秒，请先调整边界后再提取。');return;}
+  const invalid=lines.find(x=>x.end-x.start<.12-1e-9 || x.end-x.start>20);
+  if(invalid){toast('第 '+(p.lines.indexOf(invalid)+1)+' 句须为 0.12–20 秒，请先调整边界后再提取。');return;}
   if(lines.some(x=>x.render_state==='ready')&&!confirm('提取逐字时间会使涉及句子的已生成结果过期，需要重新生成。是否继续？'))return;
   mutate(async()=>{
     activeJob=await api('projects/'+p.id+'/alignments',{method:'POST',headers:{'Content-Type':'application/json'},

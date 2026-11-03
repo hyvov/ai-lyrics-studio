@@ -84,7 +84,7 @@ class Runtime:
         checks = {name: path.is_file() for name, path in files.items()}
         return {'ready': all(checks.values()), 'checks': checks, 'model_root': str(self.models),
                 'python': str(self.python), 'source_root': str(self.core), 'source_revision': UPSTREAM_COMMIT, 'singing_aligner': bool(self.hfa_config()),
-                'limits': '每句 1–20 秒；中英歌词；新旧发音单位数量相同；请导入干声。'}
+                'limits': '每句 0.12–20 秒；中英歌词；新旧发音单位数量相同；请导入干声。'}
 
     def require(self):
         status = self.status()

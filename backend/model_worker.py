@@ -135,7 +135,7 @@ def run(config):
             report('alignment_warning', message='歌声对齐组件不可用，改用备用对齐：' + str(exc))
     for position, line in enumerate(segments, 1):
         crop = audio[round(line['start'] * sr):round(line['end'] * sr)]
-        if len(crop) < sr or np.max(np.abs(crop)) < .001:
+        if len(crop) < round(sr * .12)-1 or np.max(np.abs(crop)) < .001:
             raise ValueError('当前句音频过短或接近静音，请调整边界。')
         saved = config.get('saved_alignments', {}).get(line['id'])
         aligned = timings_to_slots(line, saved['unit_timings']) if saved else None

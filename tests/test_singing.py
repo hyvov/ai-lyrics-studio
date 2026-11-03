@@ -17,6 +17,12 @@ class SingingTests(unittest.TestCase):
         self.assertEqual(pitches,[0,60,60,67,67]);self.assertEqual(repaired,2)
         with self.assertRaises(ValueError):repair_score_pitches([0,0],[1,2],[.2,.2])
 
+    def test_short_phrase_is_accepted_down_to_120_milliseconds(self):
+        p=copy.deepcopy(self.p);p['lines'][0]['start']=.7;p['lines'][0]['end']=.82
+        self.assertEqual(len(validate_render(p,['line1'])),1)
+        p['lines'][0]['end']=.819
+        with self.assertRaises(ValueError):validate_render(p,['line1'])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

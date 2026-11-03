@@ -65,6 +65,8 @@ class RenderJobs:
             directory.mkdir()
             job = dict(id=job_id, kind=kind, project_id=project_id, segment_ids=segment_ids, status='running', stage='starting',
                        error=None, warnings=[], created_at=time.time())
+            if any(x['end']-x['start']<1 for x in selected):
+                job['warnings'].append('部分唱句不足 1 秒，识别和演唱可能不稳定，请重点试听。')
             self.jobs[job_id] = job
             self.active = job_id
             self._persist(job)
