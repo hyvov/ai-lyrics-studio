@@ -37,9 +37,9 @@ class WaveEditor {
     new ResizeObserver(() => this.layout()).observe(this.stage);
   }
   clamp(v,a,b) { return Math.max(a, Math.min(b,v)); }
-  setData({key, values, duration, domain, regions, disabled = false}) {
+  setData({key, values, duration, domain, regions, disabled = false, minDuration = .02, coupleAdjacent = false}) {
     if (key !== this.key) { this.key=key; this.domain=[...domain]; this.view=[...domain]; this.undo=[]; this.redo=[]; }
-    this.values=values; this.duration=duration; this.disabled=disabled;
+    this.values=values; this.duration=duration; this.disabled=disabled; this.minDuration=minDuration; this.coupleAdjacent=coupleAdjacent;
     this.regions=structuredClone(regions);
     if (this.nodes.length !== regions.length) {
       this.regionsLayer.replaceChildren(); this.nodes=[];
@@ -81,7 +81,13 @@ class WaveEditor {
     if(edge==='move') {
       const length=origin.end-origin.start, start=this.clamp(time,min,max-length);
       r.start=+start.toFixed(3);r.end=+(start+length).toFixed(3);
-    } else r[edge]=+this.clamp(time,edge==='start'?min:r.start+.02,edge==='end'?max:r.end-.02).toFixed(3);
+    } else if (this.coupleAdjacent && edge==='start' && prev) {
+      r.start=+this.clamp(time,prev.start+this.minDuration,r.end-this.minDuration).toFixed(3);
+      if(r.start<prev.end)prev.end=r.start;
+    } else if (this.coupleAdjacent && edge==='end' && next) {
+      r.end=+this.clamp(time,r.start+this.minDuration,next.end-this.minDuration).toFixed(3);
+      if(r.end>next.start)next.start=r.end;
+    } else r[edge]=+this.clamp(time,edge==='start'?min:r.start+this.minDuration,edge==='end'?max:r.end-this.minDuration).toFixed(3);
   }
   begin(e) {
     if(e.button!==0)return;
@@ -97,6 +103,8 @@ class WaveEditor {
     if(!this.drag)return;
     if(this.drag.seek){this.onSeek(this.timeAt(e.clientX));return;}
     const {i,edge,anchor,origin}=this.drag, time=this.timeAt(e.clientX);
+    // Recalculate from the pre-drag snapshot so reversing a drag restores neighbors.
+    this.regions=structuredClone(this.drag.before);
     this.adjust(i,edge,edge==='move'?origin.start+time-anchor:time,origin);
     this.onChange(structuredClone(this.regions)); this.geometry();
   }

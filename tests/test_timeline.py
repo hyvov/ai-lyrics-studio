@@ -56,4 +56,45 @@ class TimelineTests(unittest.TestCase):
         jobs._publish_alignment(job,snapshot,directory,final=True)
         self.assertEqual(job['status'],'stale');self.assertNotIn('alignments',self.store.get(self.p['id']))
 
+    def test_phrase_couples_neighbor_atomically_and_invalidates_only_affected(self):
+        p=self.store.create({'name':'phrases','duration':6,'lines':[
+            {'id':'a','original':'你','text':'我','start':0.,'end':2.,'mode':'melody','restore':False},
+            {'id':'b','original':'好','text':'早','start':2.,'end':4.,'mode':'melody','restore':False},
+            {'id':'c','original':'呀','text':'啊','start':4.,'end':6.,'mode':'melody','restore':False}]})
+        p['alignments']={};p['renders']={}
+        for line in p['lines']:
+            p['alignments'][line['id']]={'engine':'HubertFA','fingerprint':alignment_fingerprint(p,line),
+                'unit_timings':[{'text':line['original'],'start':line['start'],'end':line['end']}]}
+            p['renders'][line['id']]={'asset_id':'fake.wav','fingerprint':fingerprint(p,line)}
+        self.store._write(p)
+        with TestClient(create_app(self.root),base_url='http://127.0.0.1:18733') as c:
+            auth={'x-studio-token':c.get('/api/session').json()['token']};url=f"/api/projects/{p['id']}/segments/b/phrase"
+            value={'revision':p['revision'],'start':1.7,'end':4.,'text':'早','mode':'melody','restore':False}
+            response=c.put(url,headers=auth,json=value)
+            self.assertEqual(response.status_code,200,response.text);saved=response.json()
+            self.assertEqual([x['end'] for x in saved['lines']],[1.7,4.,6.])
+            self.assertEqual([x['start'] for x in saved['lines']],[0.,1.7,4.])
+            self.assertEqual([x['render_state'] for x in saved['lines']],['stale','stale','ready'])
+            self.assertEqual([x['alignment_state'] for x in saved['lines']],['pending','pending','ready'])
+            self.assertEqual(c.put(url,headers=auth,json=value).status_code,409)
+            self.assertEqual(c.get(f"/api/projects/{p['id']}").json()['revision'],saved['revision'])
+            value.update(revision=saved['revision'],start=1.7,end=4.3)
+            response=c.put(url,headers=auth,json=value)
+            self.assertEqual(response.status_code,200,response.text);saved=response.json()
+            self.assertEqual(saved['lines'][1]['end'],4.3)
+            self.assertEqual(saved['lines'][2]['start'],4.3)
+            self.assertEqual(saved['lines'][2]['alignment_state'],'pending')
+            self.assertEqual(saved['lines'][2]['render_state'],'stale')
+
+    def test_phrase_rejects_short_neighbors_without_partial_save(self):
+        p=self.store.create({'name':'phrases','duration':4,'lines':[
+            {'id':'a','original':'你','text':'你','start':0.,'end':2.,'mode':'melody','restore':False},
+            {'id':'b','original':'好','text':'好','start':2.,'end':4.,'mode':'melody','restore':False}]})
+        with TestClient(create_app(self.root),base_url='http://127.0.0.1:18733') as c:
+            auth={'x-studio-token':c.get('/api/session').json()['token']};url=f"/api/projects/{p['id']}/segments/b/phrase"
+            response=c.put(url,headers=auth,json={'revision':1,'start':.05,'end':4.,'text':'好','mode':'melody','restore':False})
+            self.assertEqual(response.status_code,400,response.text)
+            saved=c.get(f"/api/projects/{p['id']}").json()
+            self.assertEqual(saved['revision'],1);self.assertEqual(saved['lines'][0]['end'],2.);self.assertEqual(saved['lines'][1]['start'],2.)
+
 if __name__=='__main__':unittest.main()

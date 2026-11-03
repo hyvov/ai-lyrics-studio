@@ -98,6 +98,10 @@ function render() {
     copy.append(words, original, state); row.append(copy, edit); $('lyricsList').append(row);
   }
   const pending = p?.lines.filter(x => changed(x) && x.render_state !== 'ready').length || 0;
+  const unaligned = p?.lines.filter(x => x.alignment_state !== 'ready').length || 0;
+  $('batchAlign').textContent = '提取未对齐歌词 ' + unaligned + ' 句';
+  $('batchAlign').disabled = !unaligned || !!activeJob || !modelReady || !p?.assets.source || !!p?.source_issue;
+  $('batchAlign').title = p?.source_issue || '批量提取未对齐的逐字时间；已有时间不会被覆盖';
   $('batch').textContent = '生成 ' + pending + ' 句'; $('batch').disabled = !pending || !!activeJob || !modelReady || !!p?.source_issue;
   $('batch').title = p?.source_issue || '';
   $('versionRendered').disabled = !p?.rendered_available;
@@ -212,9 +216,10 @@ function drawEditorWave() {
   drawWave(document.querySelector('[data-wave="4"]'), values, '整首概览');
   if (phraseWaveEditor) {
     const p=project(), line=p.lines[selected];
-    phraseWaveEditor.setData({key:p.id+line.id, values, duration:duration(),
-      domain:[Math.max(p.lines[selected-1]?.end||0,line.start-1),Math.min(p.lines[selected+1]?.start??duration(),line.end+1)],
-      regions:[{text:'当前句',start,end}], disabled:busy||!!activeJob});
+    const previous=p.lines[selected-1], following=p.lines[selected+1];
+    phraseWaveEditor.setData({key:p.id+line.id+':'+line.start+':'+line.end, values, duration:duration(),
+      domain:[Math.max(previous ? previous.start+.12 : 0,line.start-1),Math.min(following ? following.end-.12 : duration(),line.end+1)],
+      regions:[{text:'当前句',start,end}], disabled:busy||!!activeJob, minDuration:.12});
   }
 }
 function ensurePhraseWave() {
@@ -230,7 +235,7 @@ function refreshWordWave() {
   const p=project(), line=p?.lines[timelineSelected];if(!line||!wordWaveEditor)return;
   const regions=Array.from($('wordTimeline').children).map(row=>({text:row.dataset.word,start:parseFloat(row.querySelector('.word-start').value),end:parseFloat(row.querySelector('.word-end').value)}));
   if(regions.some(r=>!Number.isFinite(r.start)||!Number.isFinite(r.end)))return;
-  wordWaveEditor.setData({key:p.id+line.id,values:peaks.get(p.assets.source?.id),duration:duration(),domain:[line.start,line.end],regions,disabled:busy||!!activeJob});
+  wordWaveEditor.setData({key:p.id+line.id+':'+line.start+':'+line.end,values:peaks.get(p.assets.source?.id),duration:duration(),domain:[line.start,line.end],regions,disabled:busy||!!activeJob,coupleAdjacent:true});
 }
 function ensureWordWave() {
   if(wordWaveEditor)return;
@@ -239,6 +244,7 @@ function ensureWordWave() {
     regions.forEach((r,i)=>{const row=$('wordTimeline').children[i];row.querySelector('.word-start').value=r.start.toFixed(3);row.querySelector('.word-end').value=r.end.toFixed(3);});
     timelineDirty=true;
   }});
+  host.querySelector('small').textContent += ' · 推动边界会联动相邻字';
 }
 async function loadAudio(position = 0, resume = false) {
   pause(); const p = project(), revision = ++waveRevision;
@@ -290,17 +296,19 @@ function openEdit(i) {
 }
 function validate() {
   const p = project(), a = +$('start').value, b = +$('end').value;
-  const chars = Array.from($('newLyrics').value.replaceAll('<SP>', '').replace(/\s/g, ''));
-  const n = Array.from(p.lines[selected].original.replaceAll('<SP>', '').replace(/\s/g, '')).length;
+  const chars = lyricUnits($('newLyrics').value);
+  const n = lyricUnits(p.lines[selected].original).length;
   const previous = p.lines[selected - 1], next = p.lines[selected + 1];
   const ok = $('start').value !== '' && $('end').value !== '' && Number.isFinite(a) && Number.isFinite(b)
-    && a >= 0 && a < b && b <= duration() && (!previous || a >= previous.end) && (!next || b <= next.start) && chars.length > 0;
+    && a >= 0 && b-a >= .12-1e-9 && b <= duration() && (!previous || a >= previous.start+.12-1e-9)
+    && (!next || b <= next.end-.12+1e-9) && chars.length > 0;
   $('save').disabled = !ok || busy;
   $('slotCount').textContent = chars.length + ' / ' + n;
   $('slots').replaceChildren();
   chars.forEach((char, i) => { const slot = document.createElement('div'), label = document.createElement('small'); label.textContent = '字 ' + (i + 1); slot.append(label, document.createTextNode(char)); $('slots').append(slot); });
   $('slotHint').textContent = chars.length === n ? '字数一致；实际旋律槽位与发音适配仍需模型分析。' : '字数发生变化，实际分配需结合音符和发音。';
-  $('validation').textContent = ok ? (p.source_issue ? '当前为无演唱测试音，只能编辑与试听，不能生成。' : '保存后写入本机工程。') : '歌词不能为空，边界须位于音频内且不能与相邻句重叠。';
+  const affected = [previous && a < previous.end ? '上一句终点' : '', next && b > next.start ? '下一句起点' : ''].filter(Boolean);
+  $('validation').textContent = ok ? (affected.length ? '保存时将同步调整'+affected.join('和')+'；受影响句子需要重新对齐和生成。' : (p.source_issue ? '当前为无演唱测试音，只能编辑与试听，不能生成。' : '保存后写入本机工程。')) : '歌词不能为空；当前句和相邻句均须至少保留 120 毫秒，边界不能超出音频。';
   drawEditorWave(); return ok;
 }
 $('newLyrics').oninput = validate;
@@ -311,13 +319,16 @@ for (const id of ['start', 'end']) {
 $('save').onclick = () => {
   if (!validate()) return;
   mutate(async () => {
-    const value = structuredClone(project()), line = value.lines[selected];
-    Object.assign(line, {text: $('newLyrics').value, start: +$('start').value, end: +$('end').value,
-      mode: document.querySelector('[data-mode].chosen').dataset.mode, restore: $('restore').checked});
-    const saved = await api('projects/' + value.id, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value)});
+    const saved = await savePhrase();
     replaceProject(saved); loadAudio(); $('edit').close(); toast('歌词与边界已保存到本机。');
   });
 };
+function savePhrase() {
+  const p=project(), line=p.lines[selected];
+  return api('projects/'+p.id+'/segments/'+line.id+'/phrase', {method:'PUT',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({revision:p.revision,text:$('newLyrics').value,start:+$('start').value,end:+$('end').value,
+      mode:document.querySelector('[data-mode].chosen').dataset.mode,restore:$('restore').checked})});
+}
 $('closeEdit').onclick = () => { if (!busy) { pause(); $('edit').close(); } };
 $('edit').addEventListener('cancel', event => { if (busy) event.preventDefault(); else pause(); });
 $('edit').addEventListener('close', pause);
@@ -325,15 +336,26 @@ document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => document
 $('regenerate').onclick = () => {
   if (!validate()) return;
   mutate(async () => {
-    const value = structuredClone(project()), line = value.lines[selected];
-    Object.assign(line, {text: $('newLyrics').value, start: +$('start').value, end: +$('end').value,
-      mode: document.querySelector('[data-mode].chosen').dataset.mode, restore: false});
-    const saved = await api('projects/' + value.id, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value)});
+    const line = project().lines[selected];
+    const saved = await savePhrase();
     replaceProject(saved); $('edit').close(); pause();
     await startRender([line.id]);
   });
 };
 $('batch').onclick = () => mutate(() => startRender(project().lines.filter(x => changed(x) && x.render_state !== 'ready').map(x => x.id)));
+$('batchAlign').onclick = () => {
+  const p=project(), lines=p.lines.filter(x=>x.alignment_state!=='ready').slice(0,100);
+  if(!lines.length)return;
+  const invalid=lines.find(x=>x.end-x.start<1 || x.end-x.start>20);
+  if(invalid){toast('第 '+(p.lines.indexOf(invalid)+1)+' 句须为 1–20 秒，请先调整边界后再提取。');return;}
+  if(lines.some(x=>x.render_state==='ready')&&!confirm('提取逐字时间会使涉及句子的已生成结果过期，需要重新生成。是否继续？'))return;
+  mutate(async()=>{
+    activeJob=await api('projects/'+p.id+'/alignments',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({revision:p.revision,segment_ids:lines.map(x=>x.id)})});
+    render();pollJob();
+    if(p.lines.filter(x=>x.alignment_state!=='ready').length>100)toast('本次提取前 100 句；完成后可再次点击处理剩余句子。');
+  });
+};
 
 $('theme').onclick = () => { const dark = document.body.classList.toggle('dark'); $('theme').textContent = dark ? '☀ 白天' : '☾ 夜间'; };
 document.querySelectorAll('[data-info]').forEach(b => b.onclick = () => toast(b.dataset.info));
@@ -489,12 +511,20 @@ $('timelineEditor').addEventListener('cancel',event=>{
   if(busy||timelineDirty&&!confirm('放弃尚未保存的时间轴修改？'))event.preventDefault();
   else{timelineDirty=false;pause();}
 });
-$('saveOriginal').onclick=()=>mutate(async()=>{
+$('saveOriginal').onclick=()=>{
+  const line=project().lines[timelineSelected], text=$('timelineOriginal').value.trim();
+  if(text===line.original){toast('原词没有变化；如调整了逐字时间，请点击保存逐字时间。');return;}
+  const rows=Array.from($('wordTimeline').children), saved=line.unit_timings||[];
+  const timesChanged=rows.length===saved.length && rows.some((row,i)=>
+    row.querySelector('.word-start').value!==saved[i].start.toFixed(3) || row.querySelector('.word-end').value!==saved[i].end.toFixed(3));
+  if(timesChanged&&!confirm('保存原词会清除当前句的旧对齐，尚未保存的逐字时间也会丢失。是否继续？'))return;
+  mutate(async()=>{
   const p=project(),line=p.lines[timelineSelected];
   const updated=await api('projects/'+p.id+'/segments/'+line.id+'/original',{
     method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:p.revision,text:$('timelineOriginal').value})});
   timelineDirty=false;replaceProject(updated);renderTimeline();toast('原词校正已保存；已修改的新歌词保留，原词变化后需重新对齐。');
-});
+  });
+};
 $('extractWords').onclick=()=>{
   const p=project(),line=p.lines[timelineSelected];
   if($('timelineOriginal').value.trim()!==line.original){toast('请先保存原词校正，再提取时间。');return;}
@@ -531,6 +561,7 @@ async function pollJob() {
   const panel = $('jobPanel'); panel.hidden = false;
   try {
     const job = await api('jobs/' + activeJob.id); activeJob = job;
+    $('cancelJob').textContent = job.kind === 'align' ? '取消对齐' : '取消生成';
     $('jobStage').textContent = STAGES[job.stage] || job.stage;
     if ($('timelineEditor').open && !timelineDirty && !['succeeded','failed','cancelled','interrupted','stale'].includes(job.status)) $('timelineHint').textContent='正在'+(STAGES[job.stage]||job.stage)+'…';
     $('jobDetail').textContent = (job.position ? ' · 第 ' + job.position + ' / ' + job.total + ' 句' : '') + ' · 模型进程独立运行';
@@ -539,7 +570,7 @@ async function pollJob() {
       const p = project();
       if (p && p.id === job.project_id) {
         const latest = await api('projects/' + p.id); replaceProject(latest);
-        if (job.status === 'succeeded' && latest.rendered_available) activeVoice = 'rendered';
+        if (job.kind !== 'align' && job.status === 'succeeded' && latest.rendered_available) activeVoice = 'rendered';
         if (job.kind !== 'align') loadAudio();
       }
       render();

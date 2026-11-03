@@ -195,6 +195,36 @@ def create_app(data_root: Path | None = None) -> FastAPI:
         value = await body(request)
         return jobs.submit(project_id,value.get('revision'),value.get('segment_ids'),kind='align')
 
+    @app.put('/api/projects/{project_id}/segments/{segment_id}/phrase')
+    async def edit_phrase(project_id: str, segment_id: str, request: Request):
+        """Save a phrase and any adjacent boundaries as one revision."""
+        value = await body(request)
+        with store.lock:
+            p = store.get(project_id)
+            if type(value.get('revision')) is not int or value['revision'] != p['revision']:
+                raise Conflict('工程已更新，请重新打开歌词编辑。')
+            index = next((i for i, line in enumerate(p['lines']) if line['id'] == segment_id), -1)
+            if index < 0:
+                raise FileNotFoundError()
+            start, end = value.get('start'), value.get('end')
+            if any(isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n) for n in (start, end)):
+                raise ValueError('唱句边界须为有限数字。')
+            if start < 0 or end > p['duration'] or end - start < .12 - 1e-9:
+                raise ValueError('唱句须在音频范围内且至少保留 120 毫秒。')
+            line = p['lines'][index]
+            previous = p['lines'][index - 1] if index else None
+            following = p['lines'][index + 1] if index + 1 < len(p['lines']) else None
+            if previous and start < previous['end']:
+                if start - previous['start'] < .12 - 1e-9:
+                    raise ValueError('调整后上一句至少需要保留 120 毫秒。')
+                previous['end'] = start
+            if following and end > following['start']:
+                if following['end'] - end < .12 - 1e-9:
+                    raise ValueError('调整后下一句至少需要保留 120 毫秒。')
+                following['start'] = end
+            line.update(start=start, end=end, text=value.get('text'), mode=value.get('mode'), restore=value.get('restore'))
+            return view(store.update(project_id, p))
+
     @app.put('/api/projects/{project_id}/segments/{segment_id}/timeline')
     async def edit_word_times(project_id: str, segment_id: str, request: Request):
         value = await body(request)
