@@ -746,10 +746,11 @@ async function pollJob() {
     if ($('timelineEditor').open && !timelineDirty && !['succeeded','failed','cancelled','interrupted','stale'].includes(job.status)) $('timelineHint').textContent='正在'+(STAGES[job.stage]||job.stage)+'…';
     $('jobDetail').textContent = (job.position ? ' · 第 ' + job.position + ' / ' + job.total + ' 句' : '') + ' · 模型进程独立运行';
     if (['succeeded','failed','cancelled','interrupted','stale'].includes(job.status)) {
+      const latest = await api('projects/' + job.project_id);
       activeJob = null; panel.hidden = true;
-      const p = project();
-      if (p && p.id === job.project_id) {
-        const latest = await api('projects/' + p.id); replaceProject(latest);
+      const projectIndex = projects.findIndex(item => item.id === job.project_id);
+      if (projectIndex !== -1) projects[projectIndex] = latest;
+      if (project() && project().id === job.project_id) {
         if (['render','compose'].includes(job.kind) && job.status === 'succeeded' && latest.rendered_available) activeVoice = 'rendered';
         if (job.kind === 'svc' && job.status === 'succeeded' && latest.svc_available) activeVoice = 'svc';
         if (job.kind !== 'align') loadAudio();
