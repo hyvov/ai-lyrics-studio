@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.store import Conflict, Store, export_lrc, export_srt, parse_lyrics,snapshot_lyrics,validate_project
 from backend.jobs import RenderJobs
-from backend.media import source_issue
+from backend.media import source_issue,waveform
 from backend.singing import fingerprint, composition_fingerprint, svc_fingerprint, units
 from backend.timeline import alignment_fingerprint, cached_alignment, validate_timings
 from backend.phrases import split_phrase, merge_next
@@ -401,6 +401,14 @@ def create_app(data_root: Path | None = None) -> FastAPI:
         if not path.is_file():
             raise FileNotFoundError()
         return FileResponse(path)
+
+    @app.get('/api/assets/{asset_id}/waveform')
+    def asset_waveform(asset_id: str):
+        import re
+        if not re.fullmatch(r'[a-f0-9]{32}\.(wav|mp3|flac|m4a|ogg|aac|opus|webm)',asset_id):raise FileNotFoundError()
+        path=assets/asset_id
+        if not path.is_file():raise FileNotFoundError()
+        return {'peaks':waveform(path),'sample_interval':.005}
 
     app.mount('/', StaticFiles(directory=ROOT / 'design', html=True), name='ui')
     return app

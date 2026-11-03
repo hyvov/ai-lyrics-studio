@@ -253,12 +253,29 @@ def run(config):
             generated = model.infer(inputs, auto_shift=False, pitch_shift=0, n_steps=32, cfg=3,
                                     control=line['mode'], use_fp16=True).squeeze().float().cpu().numpy()
         required = round((line['end'] - line['start']) * sr)
-        if len(generated) < required - sr * .25 or not np.isfinite(generated).all() or np.max(np.abs(generated)) < .0001:
+        if len(generated) < required - min(sr * .25, required * .2) or not np.isfinite(generated).all() or np.max(np.abs(generated)) < .0001:
             raise ValueError('生成音频异常或长度不足，未发布该结果。')
         generated = np.pad(generated[:required], (0, max(0, required - len(generated))))
         output = jobdir / (line['id'] + '-generated.wav')
         sf.write(output, generated, sr, subtype='PCM_16')
         outputs.append({'segment_id': line['id'], 'path': str(output), 'sample_rate': sr, 'frames': required})
+    if any(line.get('restore') for line,_,_,_ in metadata):
+        import shutil
+        from backend.svc_worker import run as convert_voice
+        svc_config=config.get('svc')
+        if not svc_config:raise ValueError('原句音色转换组件不可用。')
+        del model,processor,inputs,generated
+        clear_gpu()
+        for (line,reference,_,_),output in zip(metadata,outputs):
+            if not line.get('restore'):continue
+            report('svc_restore',segment_id=line['id'])
+            svc_dir=jobdir/(line['id']+'-svc');svc_dir.mkdir(exist_ok=True)
+            convert_voice({**svc_config,'reference':str(reference),'target':output['path'],'job_dir':str(svc_dir)},nested=True)
+            converted=svc_dir/'svc.wav'
+            samples,converted_sr=sf.read(converted,dtype='float32')
+            if converted_sr!=sr or samples.ndim!=1 or len(samples)!=output['frames'] or not np.isfinite(samples).all():
+                raise ValueError('原句音色转换结果格式异常。')
+            shutil.copyfile(converted,output['path'])
     report('composing')
     merged = audio.copy()
     all_takes = list(config.get('existing_takes', [])) + [

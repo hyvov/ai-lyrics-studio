@@ -60,6 +60,10 @@ class RenderJobs:
                 raise ValueError('无效任务类型。')
             selected = (validate_alignment if kind == 'align' else validate_render)(p, segment_ids)
             self.runtime.require()
+            svc_config=None
+            if kind=='render' and any(line.get('restore') for line in selected):
+                svc_config=self.runtime.svc_config()
+                if not svc_config:raise ValueError('原句音色转换需要本地 SoulX Studio SVC 组件。')
             job_id = uuid4().hex
             directory = self.root / job_id
             directory.mkdir()
@@ -73,7 +77,8 @@ class RenderJobs:
             config = {'core': str(self.runtime.core), 'models': str(self.runtime.models), 'job_dir': str(directory.resolve()),
                       'source': str((self.assets / p['assets']['source']['id']).resolve()), 'segments': selected,
                       'existing_takes': [], 'hfa': self.runtime.hfa_config(), 'operation':kind,
-                      'saved_alignments':{x['id']:cached_alignment(p,x) for x in selected if kind == 'render' and cached_alignment(p,x)}}
+                      'saved_alignments':{x['id']:cached_alignment(p,x) for x in selected if kind == 'render' and cached_alignment(p,x)},
+                      'svc':svc_config}
             if p['assets'].get('accompaniment'):
                 config['accompaniment'] = str((self.assets / p['assets']['accompaniment']['id']).resolve())
             for line in p['lines']:

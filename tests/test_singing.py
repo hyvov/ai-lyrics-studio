@@ -23,6 +23,14 @@ class SingingTests(unittest.TestCase):
         p['lines'][0]['end']=.819
         with self.assertRaises(ValueError):validate_render(p,['line1'])
 
+    def test_restore_voice_is_available_only_in_score_mode(self):
+        p=copy.deepcopy(self.p);p['lines'][0].update(mode='score',restore=True)
+        self.assertEqual(len(validate_render(p,['line1'])),1)
+        original=fingerprint(p,p['lines'][0]);p['lines'][0]['restore']=False
+        self.assertNotEqual(original,fingerprint(p,p['lines'][0]))
+        p['lines'][0].update(mode='melody',restore=True)
+        with self.assertRaises(ValueError):validate_render(p,['line1'])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

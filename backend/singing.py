@@ -40,8 +40,8 @@ def validate_render(project, segment_ids):
     for line in selected:
         if len(units(line['original'])) != len(units(line['text'])):
             raise ValueError('首版需保持新词与原词的发音单位数一致（一个汉字或英文单词算一个单位）。')
-        if line.get('restore'):
-            raise ValueError('原句音色转换尚未接入，请关闭该选项。')
+        if line.get('restore') and line.get('mode')!='score':
+            raise ValueError('原句音色转换仅支持 MIDI 模式。')
     return selected
 
 

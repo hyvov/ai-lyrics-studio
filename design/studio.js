@@ -2,12 +2,17 @@ const $ = id => document.getElementById(id);
 const source = new Audio(), accompaniment = new Audio();
 source.preload = accompaniment.preload = 'metadata';
 let projects = [], current = 0, selected = 0, token = '', busy = false;
-let activeVoice = 'source', activeJob = null, pollTimer = null, modelReady = false;
+let activeVoice = 'source', activeJob = null, pollTimer = null, modelReady = false, svcReady = false;
 let timelineSelected = 0, timelineDirty = false;
 const lyricUnits = text => text.replaceAll('<SP>', ' ').match(/[\u4e00-\u9fff]|[A-Za-z]+(?:'[A-Za-z]+)*/g) || [];
 let importKind = 'source', toastTimer, clipEnd = null, waveRevision = 0, playbackFrame;
 let svcTargetKind = 'source';
 const peaks = new Map();
+function cachePeaks(id,values) {
+  peaks.delete(id);peaks.set(id,values);
+  while(peaks.size>4)peaks.delete(peaks.keys().next().value);
+  return values;
+}
 const project = () => projects[current];
 const duration = () => project()?.duration || 30;
 const changed = x => x.text !== x.original;
@@ -199,9 +204,20 @@ function drawWave(element, values, label = '尚未导入音频') {
 }
 async function decodePeaks(asset, revision) {
   if (!asset) return null;
-  if (peaks.has(asset.id)) return peaks.get(asset.id);
+  if (peaks.has(asset.id)) return cachePeaks(asset.id,peaks.get(asset.id));
+  const serverPeaks=async()=>{
+    if(asset.duration>1800)return null;
+    const response=await fetch('/api/assets/'+asset.id+'/waveform');
+    if(!response.ok)return null;
+    const result=(await response.json()).peaks;
+    if(!Array.isArray(result)||!result.length)return null;
+    return cachePeaks(asset.id,result);
+  };
   const response = await fetch('/api/assets/' + asset.id);
-  if (!response.ok || +(response.headers.get('content-length') || 0) > 80 * 1024 * 1024) return null;
+  if (!response.ok) return null;
+  if (+(response.headers.get('content-length') || 0) > 80 * 1024 * 1024) {
+    await response.body?.cancel();return serverPeaks();
+  }
   const buffer = await response.arrayBuffer();
   if (revision !== waveRevision) return null;
   const context = new AudioContext();
@@ -217,8 +233,9 @@ async function decodePeaks(asset, revision) {
       }
       result.push(max);
     }
-    peaks.set(asset.id, result); return result;
-  } finally { await context.close(); }
+    return cachePeaks(asset.id,result);
+  } catch (_) { return serverPeaks(); }
+  finally { await context.close(); }
 }
 let phraseWaveEditor = null, wordWaveEditor = null;
 function drawEditorWave() {
@@ -303,10 +320,11 @@ function openEdit(i) {
   $('sourceText').textContent = $('original').textContent = line.original;
   $('newLyrics').value = line.text;
   for (const id of ['start', 'end', 'startRange', 'endRange']) { $(id).max = duration(); $(id).value = id.startsWith('start') ? line.start : line.end; }
-  $('restore').checked = false;
+  $('restore').checked = !!line.restore;
   $('regenerate').disabled = !!activeJob || !modelReady || !!project()?.source_issue;
   $('regenerate').title = project()?.source_issue || '';
   document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('chosen', b.dataset.mode === line.mode));
+  syncRestore();
   ensurePhraseWave(); validate(); $('edit').showModal(); drawEditorWave();
 }
 function validate() {
@@ -347,7 +365,16 @@ function savePhrase() {
 $('closeEdit').onclick = () => { if (!busy) { pause(); $('edit').close(); } };
 $('edit').addEventListener('cancel', event => { if (busy) event.preventDefault(); else pause(); });
 $('edit').addEventListener('close', pause);
-document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => document.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('chosen', x === b)));
+function syncRestore() {
+  const score=document.querySelector('[data-mode].chosen')?.dataset.mode==='score';
+  $('restore').disabled=!score||!svcReady||!!activeJob;
+  $('restore').title=!score?'仅 MIDI 模式可使用':!svcReady?'本地 SVC 组件未就绪':'';
+}
+document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
+  document.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('chosen', x === b));
+  if(b.dataset.mode!=='score')$('restore').checked=false;
+  syncRestore();validate();
+});
 $('regenerate').onclick = () => {
   if (!validate()) return;
   mutate(async () => {
@@ -527,6 +554,7 @@ async function init() {
     projects = await api('projects'); render(); loadAudio(); $('saveState').textContent = '本机服务已连接';
     document.querySelector('.badge').textContent = modelReady ? '共用模型已就绪' : '模型环境待配置';
     const runtime = await api('runtime');
+    svcReady=!!runtime.svc_ready;
     if (runtime.active_job) { activeJob = runtime.active_job; pollJob(); }
 
   } catch (error) {
@@ -701,7 +729,7 @@ $('takeHistory').onclick=async()=>{
 $('closeTakes').onclick=()=>$('takeDialog').close();
 $('takeDialog').addEventListener('close',()=>document.querySelectorAll('#takeList audio').forEach(audio=>audio.pause()));
 
-const STAGES = {starting:'启动模型进程', separation_decode:'读取歌曲', separation_vocal:'分离人声与伴奏', separation_dry:'人声去混响与回声', asr_decode:'读取人声', asr_load:'加载识词模型', asr_recognize:'识别歌词草稿', svc_pitch:'分析参考与目标人声音高', svc_load:'加载音色转换模型', svc_generate:'转换人声音色', svc_mix:'合成变声混音', alignment_cached:'复用已保存的逐字时间', alignment:'原词逐字对齐', singing_alignment:'歌声逐字对齐', alignment_warning:'校验短音节边界', pitch_warning:'修复 MIDI 音高', pitch:'提取旋律音高', notes:'提取音符与槽位', loading_singer:'加载演唱模型', generating:'生成演唱', composing:'拼接与混音', complete:'任务完成'};
+const STAGES = {starting:'启动模型进程', separation_decode:'读取歌曲', separation_vocal:'分离人声与伴奏', separation_dry:'人声去混响与回声', asr_decode:'读取人声', asr_load:'加载识词模型', asr_recognize:'识别歌词草稿', svc_restore:'恢复原句音色', svc_pitch:'分析参考与目标人声音高', svc_load:'加载音色转换模型', svc_generate:'转换人声音色', svc_mix:'合成变声混音', alignment_cached:'复用已保存的逐字时间', alignment:'原词逐字对齐', singing_alignment:'歌声逐字对齐', alignment_warning:'校验短音节边界', pitch_warning:'修复 MIDI 音高', pitch:'提取旋律音高', notes:'提取音符与槽位', loading_singer:'加载演唱模型', generating:'生成演唱', composing:'拼接与混音', complete:'任务完成'};
 async function startRender(ids) {
   const p = project();
   activeJob = await api('projects/' + p.id + '/renders', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:p.revision,segment_ids:ids})});

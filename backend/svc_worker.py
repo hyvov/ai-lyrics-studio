@@ -15,7 +15,7 @@ def report(stage, **values):
     print('STUDIO_EVENT '+json.dumps({'stage':stage,**values},ensure_ascii=False),flush=True)
 
 
-def run(config):
+def run(config, nested=False):
     import numpy as np
     import soundfile as sf
     import torch
@@ -64,7 +64,7 @@ def run(config):
         peak=np.max(np.abs(mixed))
         if peak>.98:mixed*=.98/peak
         sf.write(directory/'svc-mixed.wav',mixed,int(cfg.audio.sample_rate),subtype='PCM_16')
-    report('complete')
+    if not nested:report('complete')
 
 
 if __name__=='__main__':
