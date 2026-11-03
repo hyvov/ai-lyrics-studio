@@ -104,7 +104,7 @@ function render() {
     const original = document.createElement('div'); original.className = 'source';
     original.textContent = changed(line) ? '原词：' + line.original : '原词 · ' + fmt(line.start) + ' — ' + fmt(line.end);
     const state = document.createElement('div'); state.className = 'state'; state.title = line.render_warning || '';
-    state.textContent = line.needs_review ? '自动识词 · 请校对原词和边界' : line.render_legacy ? '旧版可能唱原词 · 请重新生成' : line.render_state === 'ready' ? (line.render_warning ? '已生成 · 建议试听校对' : '已生成') : line.render_state === 'stale' ? '修改后待重新生成' : changed(line) ? '待生成' : '';
+    state.textContent = line.needs_review ? '自动识词 · 请校对原词和边界' : line.render_legacy ? '旧版可能唱原词 · 请重新生成' : line.render_state === 'ready' ? ('已生成 · ' + (line.mode === 'score' ? 'MIDI' : '旋律') + (line.render_warning ? ' · 建议试听校对' : '')) : line.render_state === 'stale' ? '修改后待重新生成' : changed(line) ? '待生成' : '';
     const edit = document.createElement('button'); edit.className = 'edit-button'; edit.textContent = '♧ 改词'; edit.onclick = () => openEdit(i);
     copy.append(words, original, state); row.append(copy, edit); $('lyricsList').append(row);
   }
