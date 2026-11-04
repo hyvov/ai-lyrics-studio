@@ -248,9 +248,9 @@ def run(config):
         if timing_repaired and line['id'] in target_ids:
             report('alignment_warning',message=f'第 {position} 个处理片段的音符已按逐字时间校正，请试听。')
         if line['mode']=='score':
-            pitches,repaired=repair_score_pitches(pitches,types,durations)
+            pitches,repaired=repair_score_pitches(pitches,types,durations,f0)
             if repaired and line['id'] in target_ids:
-                report('pitch_warning',message=f'第 {position} 个处理片段有 {repaired} 个无效 MIDI 音高，已参考邻近音符修复，请试听。')
+                report('pitch_warning',message=f'第 {position} 个处理片段有 {repaired} 个无效 MIDI 音高，已参考原唱音高或邻近音符修复，请试听。')
         # Map type=2 word onsets to aligned original words. Slur notes (type=3)
         # retain the same original and new pronunciation; silence stays silence.
         target_units = units(line['text'])

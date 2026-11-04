@@ -140,8 +140,8 @@ def repair_alignment(items, duration):
     return spans, len(bad)
 
 
-def repair_score_pitches(pitches, note_types, durations):
-    """Replace unvoiced score notes with the closest valid score pitch."""
+def repair_score_pitches(pitches, note_types, durations, f0=None):
+    """Repair missing note pitches using local sung F0, then nearby notes."""
     if not pitches or len(pitches)!=len(note_types) or len(pitches)!=len(durations):
         raise ValueError('MIDI 音符数据不完整，请重新分析音频。')
     if any(not isinstance(x,(int,float)) or isinstance(x,bool) or not math.isfinite(x) or x<=0 for x in durations):
@@ -149,13 +149,26 @@ def repair_score_pitches(pitches, note_types, durations):
     values=[int(x) for x in pitches];kinds=[int(x) for x in note_types]
     valid=[i for i,(pitch,kind) in enumerate(zip(values,kinds)) if kind!=1 and 0<pitch<=127]
     invalid=[i for i,(pitch,kind) in enumerate(zip(values,kinds)) if kind!=1 and not 0<pitch<=127]
-    if invalid and not valid:raise ValueError('未检测到有效 MIDI 音高，请检查人声或改用旋律模式。')
-    centers=[];cursor=0.
+    centers=[];edges=[0.];cursor=0.
     for duration in durations:
-        centers.append(cursor+duration/2);cursor+=duration
+        centers.append(cursor+duration/2);cursor+=duration;edges.append(cursor)
     for i in invalid:
-        nearest=min(valid,key=lambda j:abs(centers[j]-centers[i]))
-        values[i]=values[nearest]
+        local=[]
+        if f0 is not None and len(f0) and cursor>0:
+            first=max(0,round(edges[i]/cursor*len(f0)))
+            last=min(len(f0),round(edges[i+1]/cursor*len(f0)))
+            frames=list(f0[first:last])
+            local=sorted(float(x) for x in frames if math.isfinite(float(x)) and 50<=float(x)<=2000)
+            if len(local)<2 or len(local)<len(frames)*.5:local=[]
+        if local:
+            middle=len(local)//2
+            median=local[middle] if len(local)%2 else (local[middle-1]+local[middle])/2
+            values[i]=max(1,min(127,round(69+12*math.log2(median/440))))
+        elif valid:
+            nearest=min(valid,key=lambda j:abs(centers[j]-centers[i]))
+            values[i]=values[nearest]
+        else:
+            raise ValueError('未检测到有效 MIDI 音高，请检查人声或改用旋律模式。')
     return values,len(invalid)
 
 def composition_fingerprint(project):
