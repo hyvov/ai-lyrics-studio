@@ -39,7 +39,7 @@ def validate_alignment(project, segment_ids):
 def validate_render(project, segment_ids):
     selected = validate_alignment(project, segment_ids)
     for line in selected:
-        if len(units(line['original'])) != len(units(line['text'])):
+        if line.get('mode') != 'ying' and len(units(line['original'])) != len(units(line['text'])):
             raise ValueError('首版需保持新词与原词的发音单位数一致（一个汉字或英文单词算一个单位）。')
         if line.get('restore') and line.get('mode')!='score':
             raise ValueError('原句音色转换仅支持 MIDI 模式。')
@@ -100,9 +100,10 @@ def fingerprint(project, line):
                'line': values,
                'pipeline': 'soulx-v1-aligned-rosvot-fp16-32'}
     if line.get('mode')=='score':payload['score_pitch_repair']=1
+    if line.get('mode')=='ying':payload['pipeline']='yingmusic-plus-local-v1'
     from backend.timeline import cached_alignment
     alignment = cached_alignment(project, line)
-    if alignment and alignment.get('engine') == 'manual':
+    if line.get('mode') != 'ying' and alignment and alignment.get('engine') == 'manual':
         payload['manual_timings'] = alignment['unit_timings']
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 

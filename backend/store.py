@@ -55,7 +55,7 @@ def validate_project(value: dict) -> dict:
         if not 0 <= a < b <= duration + 0.001 or a < previous_end - 0.001:
             raise ValueError('歌词边界超出音频时长、次序错误或存在重叠。')
         previous_end = b
-        if line.get('mode') not in ('melody', 'score') or not isinstance(line.get('restore'), bool):
+        if line.get('mode') not in ('melody', 'score', 'ying') or not isinstance(line.get('restore'), bool):
             raise ValueError('生成参数无效。')
     return {'name': name, 'duration': duration, 'lines': lines}
 

@@ -60,6 +60,12 @@ class RenderJobs:
                 raise ValueError('无效任务类型。')
             selected = (validate_alignment if kind == 'align' else validate_render)(p, segment_ids)
             self.runtime.require()
+            ying = None
+            if kind == 'render' and any(line.get('mode') == 'ying' for line in selected):
+                if any(line.get('mode') != 'ying' for line in selected):
+                    raise ValueError('请分批生成 YingMusic 和其他模式的唱句。')
+                ying = self.runtime.ying_config()
+                if not ying: raise ValueError('未找到本机 YingMusic-Singer-Plus 模型或运行环境。')
             svc_config=None
             if kind=='render' and any(line.get('restore') for line in selected):
                 svc_config=self.runtime.svc_config()
@@ -79,7 +85,8 @@ class RenderJobs:
                       'existing_takes': [], 'hfa': self.runtime.hfa_config(), 'operation':kind,
                       'saved_alignments':{x['id']:cached_alignment(p,x) for x in selected if kind == 'render' and cached_alignment(p,x)},
                       'svc':svc_config}
-            if kind == 'render':
+            if ying: config['ying'] = ying
+            if kind == 'render' and not ying:
                 references = {}
                 for line in selected:
                     if prefer_masked_reference(line, config['saved_alignments'].get(line['id'])):
@@ -224,8 +231,11 @@ class RenderJobs:
             with self.lock:
                 if job['status'] == 'cancelled':
                     return
-                worker = {'separate':'separation_worker.py','transcribe':'transcribe_worker.py','svc':'svc_worker.py','compose':'compose_worker.py'}.get(job.get('kind'),'model_worker.py')
-                process = subprocess.Popen([str(self.runtime.python), '-u', str(ROOT / 'backend' / worker), '--config', str((directory / 'input.json').resolve())],
+                config = json.loads((directory / 'input.json').read_text(encoding='utf-8'))
+                ying = config.get('ying')
+                worker = 'ying_worker.py' if ying else {'separate':'separation_worker.py','transcribe':'transcribe_worker.py','svc':'svc_worker.py','compose':'compose_worker.py'}.get(job.get('kind'),'model_worker.py')
+                python = ying['python'] if ying else str(self.runtime.python)
+                process = subprocess.Popen([python, '-u', str(ROOT / 'backend' / worker), '--config', str((directory / 'input.json').resolve())],
                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace',
                                            cwd=ROOT, env=env, creationflags=flags)
                 self.process = process

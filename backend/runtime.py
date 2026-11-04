@@ -57,6 +57,13 @@ class Runtime:
         required = [model / x for x in ('model.pth.tar', 'configuration.json', 'dict.txt', 'cmvn.ark', 'train_bpe1000.model')]
         return {'model': str(model)} if self.python.is_file() and all(x.is_file() for x in required) else None
 
+    def ying_config(self):
+        root = Path(os.environ.get('AI_LYRICS_YING_ROOT', ROOT.parent / 'YingMusic-Singer-Plus-main')).resolve()
+        python = root / '.venv/Scripts/python.exe'
+        required = [python, root/'model.safetensors', root/'config.json', root/'local_runtime.py',
+                    root/'src/YingMusicSinger/infer/YingMusicSinger.py']
+        return {'root':str(root),'python':str(python)} if all(path.is_file() for path in required) else None
+
     def svc_config(self):
         try:
             version = json.loads((self.studio / 'runtime/components/svc/current.json').read_text(encoding='utf-8-sig'))['version']

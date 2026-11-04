@@ -2,7 +2,8 @@ const $ = id => document.getElementById(id);
 const source = new Audio(), accompaniment = new Audio();
 source.preload = accompaniment.preload = 'metadata';
 let projects = [], current = 0, selected = 0, token = '', busy = false;
-let activeVoice = 'source', activeJob = null, pollTimer = null, modelReady = false, svcReady = false;
+let activeVoice = 'source', activeJob = null, pollTimer = null, modelReady = false, svcReady = false, yingReady = false;
+let batchQueue = [], batchProjectId = null;
 let voiceBeforeEditor = null;
 let timelineSelected = 0, timelineDirty = false;
 const lyricUnits = text => text.replaceAll('<SP>', ' ').match(/[\u4e00-\u9fff]|[A-Za-z]+(?:'[A-Za-z]+)*/g) || [];
@@ -113,7 +114,7 @@ function render() {
     const original = document.createElement('div'); original.className = 'source';
     original.textContent = changed(line) ? '原词：' + line.original : '原词 · ' + fmt(line.start) + ' — ' + fmt(line.end);
     const state = document.createElement('div'); state.className = 'state'; state.title = line.render_warning || '';
-    state.textContent = line.needs_review ? '自动识词 · 请校对原词和边界' : line.render_legacy ? '旧版可能唱原词 · 请重新生成' : line.render_state === 'ready' ? ('已生成 · ' + (line.mode === 'score' ? 'MIDI' : '旋律') + (line.render_warning ? ' · 建议试听校对' : '')) : line.render_state === 'stale' ? '修改后待重新生成' : changed(line) ? '待生成' : '';
+    state.textContent = line.needs_review ? '自动识词 · 请校对原词和边界' : line.render_legacy ? '旧版可能唱原词 · 请重新生成' : line.render_state === 'ready' ? ('已生成 · ' + ({score:'MIDI',melody:'旋律',ying:'YingMusic'}[line.mode] || line.mode) + (line.render_warning ? ' · 建议试听校对' : '')) : line.render_state === 'stale' ? '修改后待重新生成' : changed(line) ? '待生成' : '';
     const edit = document.createElement('button'); edit.className = 'edit-button'; edit.textContent = '♧ 改词'; edit.onclick = () => openEdit(i);
     copy.append(words, original, state); row.append(copy, edit); $('lyricsList').append(row);
   }
@@ -360,7 +361,8 @@ function validate() {
   $('slotCount').textContent = chars.length + ' / ' + n;
   $('slots').replaceChildren();
   chars.forEach((char, i) => { const slot = document.createElement('div'), label = document.createElement('small'); label.textContent = '字 ' + (i + 1); slot.append(label, document.createTextNode(char)); $('slots').append(slot); });
-  $('slotHint').textContent = chars.length === n ? '字数一致；实际旋律槽位与发音适配仍需模型分析。' : '字数发生变化，实际分配需结合音符和发音。';
+  const mode = document.querySelector('[data-mode].chosen')?.dataset.mode;
+  $('slotHint').textContent = mode === 'ying' ? 'YingMusic 可尝试不同字数；改动较大时请试听节奏和发音。' : chars.length === n ? '字数一致；实际旋律槽位与发音适配仍需模型分析。' : '当前模式要求新旧歌词发音单位数一致。';
   const affected = [previous && a < previous.end ? '上一句终点' : '', next && b > next.start ? '下一句起点' : ''].filter(Boolean);
   $('validation').textContent = ok ? (affected.length ? '保存时将同步调整'+affected.join('和')+'；受影响句子需要重新对齐和生成。' : (p.source_issue ? '当前为无演唱测试音，只能编辑与试听，不能生成。' : '保存后写入本机工程。')) : '歌词不能为空；当前句和相邻句均须至少保留 120 毫秒，边界不能超出音频。';
   drawEditorWave(); return ok;
@@ -405,7 +407,12 @@ $('regenerate').onclick = () => {
     await startRender([line.id]);
   });
 };
-$('batch').onclick = () => mutate(() => startRender(project().lines.filter(x => changed(x) && x.render_state !== 'ready').map(x => x.id)));
+$('batch').onclick = () => mutate(async () => {
+  const p=project(), pending=p.lines.filter(x=>changed(x)&&x.render_state!=='ready');
+  const groups=[pending.filter(x=>x.mode!=='ying'),pending.filter(x=>x.mode==='ying')].filter(x=>x.length);
+  batchProjectId=p.id; batchQueue=groups.slice(1).map(group=>group.map(x=>x.id));
+  try { await startRender(groups[0].map(x=>x.id),p); } catch(error) { batchQueue=[];batchProjectId=null;throw error; }
+});
 $('recompose').onclick=()=>mutate(()=>startCompose());
 async function startCompose() {
   const p=project();
@@ -576,6 +583,9 @@ async function init() {
     document.querySelector('.badge').textContent = modelReady ? '共用模型已就绪' : '模型环境待配置';
     const runtime = await api('runtime');
     svcReady=!!runtime.svc_ready;
+    yingReady=!!runtime.ying_ready;
+    document.querySelector('[data-mode="ying"]').disabled=!yingReady;
+    document.querySelector('[data-mode="ying"]').title=yingReady?'使用本机 YingMusic 模型生成': '未找到本机 YingMusic 模型';
     if (runtime.active_job) { activeJob = runtime.active_job; pollJob(); }
 
   } catch (error) {
@@ -749,9 +759,8 @@ $('takeHistory').onclick=async()=>{
 $('closeTakes').onclick=()=>$('takeDialog').close();
 $('takeDialog').addEventListener('close',()=>document.querySelectorAll('#takeList audio').forEach(audio=>audio.pause()));
 
-const STAGES = {starting:'启动模型进程', separation_decode:'读取歌曲', separation_vocal:'分离人声与伴奏', separation_dry:'人声去混响与回声', asr_decode:'读取人声', asr_load:'加载识词模型', asr_recognize:'识别歌词草稿', svc_restore:'恢复原句音色', svc_pitch:'分析参考与目标人声音高', svc_load:'加载音色转换模型', svc_generate:'转换人声音色', svc_mix:'合成变声混音', reference_masked:'准备本句音色参考', alignment_cached:'复用已保存的逐字时间', alignment:'原词逐字对齐', singing_alignment:'歌声逐字对齐', alignment_warning:'校验短音节边界', pitch_warning:'修复 MIDI 音高', pitch:'提取旋律音高', notes:'提取音符与槽位', loading_singer:'加载演唱模型', generating:'生成演唱', composing:'拼接与混音', complete:'任务完成'};
-async function startRender(ids) {
-  const p = project();
+const STAGES = {starting:'启动模型进程', loading_ying:'加载 YingMusic 模型', separation_decode:'读取歌曲', separation_vocal:'分离人声与伴奏', separation_dry:'人声去混响与回声', asr_decode:'读取人声', asr_load:'加载识词模型', asr_recognize:'识别歌词草稿', svc_restore:'恢复原句音色', svc_pitch:'分析参考与目标人声音高', svc_load:'加载音色转换模型', svc_generate:'转换人声音色', svc_mix:'合成变声混音', reference_masked:'准备本句音色参考', alignment_cached:'复用已保存的逐字时间', alignment:'原词逐字对齐', singing_alignment:'歌声逐字对齐', alignment_warning:'校验短音节边界', pitch_warning:'修复 MIDI 音高', pitch:'提取旋律音高', notes:'提取音符与槽位', loading_singer:'加载演唱模型', generating:'生成演唱', composing:'拼接与混音', complete:'任务完成'};
+async function startRender(ids, p=project()) {
   activeJob = await api('projects/' + p.id + '/renders', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:p.revision,segment_ids:ids})});
   render(); pollJob();
 }
@@ -779,6 +788,15 @@ async function pollJob() {
       }
       render();
       if ($('timelineEditor').open && !timelineDirty) renderTimeline();
+      if (batchProjectId === job.project_id && job.kind === 'render') {
+        if (job.status === 'succeeded' && batchQueue.length) {
+          const ids=batchQueue.shift();
+          try { await startRender(ids,latest); toast('上一批已完成，正在生成下一批。'); }
+          catch(error) { batchQueue=[];batchProjectId=null;toast(error.message); }
+          return;
+        }
+        batchQueue=[];batchProjectId=null;
+      }
       toast(job.status === 'succeeded' ? (job.kind === 'align' ? '逐字时间已提取并保存。' : job.kind === 'separate' ? '人声和伴奏已分离并导入工程。' : job.kind === 'transcribe' ? '已生成歌词草稿，请逐句校对原词和边界。' : job.kind === 'svc' ? '音色转换完成，可试听或导出。' : job.kind === 'compose' ? '已复用演唱片段完成重新混音。' : '真实演唱已生成，可切换原唱/改词试听。') + (job.warnings.length ? job.warnings.join(' ') : '') : job.error || '任务已取消。');
       return;
     }

@@ -126,3 +126,9 @@ SRT/LRC 导入支持 UTF-8、带 BOM 的 UTF-16 和常见 GBK/GB18030 编码，�
 python -m pip install -r requirements-desktop.txt
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name "AI Lyrics Studio" desktop/launcher.py
 ```
+
+### YingMusic 唱句模式（本机实验功能）
+
+编辑唱句时可选择 YingMusic，使用同级 `YingMusic-Singer-Plus-main` 工作区已有的模型和 `.venv`，从原唱的人声旋律生成改词；可尝试不同字数，发音、旋律与片段边界仍需试听。原有旋律和 MIDI 模式不变，历史结果仍可试听。批量中混用模式时客户端会自动按模型分批。
+
+此功能不下载模型；移动本机 YingMusic 工作区时，可用 `AI_LYRICS_YING_ROOT` 指定其路径。模型和依赖遵循 YingMusic-Singer-Plus 项目及其组件各自的许可证，详见其仓库的 LICENSE 与 LICENSE-STABILITY。生成音频按当前唱句时间边界拼接，过长或不足会提示试听；请勿将单次自动识词结果视为音质保证。

@@ -214,7 +214,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
         with jobs.lock:
             active = jobs.get(jobs.active) if jobs.active else None
         return {**jobs.runtime.status(), 'separation_ready': bool(jobs.runtime.separation_config()),
-                'transcription_ready': bool(jobs.runtime.transcription_config()), 'svc_ready':bool(jobs.runtime.svc_config()), 'active_job': active}
+                'transcription_ready': bool(jobs.runtime.transcription_config()), 'svc_ready':bool(jobs.runtime.svc_config()), 'ying_ready':bool(jobs.runtime.ying_config()), 'active_job': active}
 
     @app.get('/api/projects/{project_id}')
     def get_project(project_id: str):
