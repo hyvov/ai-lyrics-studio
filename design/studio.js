@@ -19,16 +19,25 @@ const duration = () => project()?.duration || 30;
 const changed = x => x.text !== x.original;
 const fmt = n => String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(Math.floor(n % 60)).padStart(2, '0');
 function toast(text) {
-  $('toast').textContent = text;
-  $('toast').classList.add('visible');
+  const message = $('toast');
+  const dialogs = Array.from(document.querySelectorAll('dialog[open]'));
+  (dialogs.at(-1) || document.body).appendChild(message);
+  message.textContent = text;
+  message.classList.add('visible');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => $('toast').classList.remove('visible'), 5500);
 }
 async function api(path, options = {}) {
-  const response = await fetch('/api/' + path, {
-    ...options,
-    headers: {'X-Studio-Token': token, ...options.headers},
-  });
+  const request = () => fetch('/api/' + path, {...options, headers: {'X-Studio-Token': token, ...options.headers}});
+  let response = await request();
+  if (response.status === 403 && (await response.clone().json().catch(() => ({}))).error === '会话已失效，请刷新页面。') {
+    const sessionResponse = await fetch('/api/session');
+    if (!sessionResponse.ok) throw new Error('本机会话恢复失败，请稍后重试。');
+    const session = await sessionResponse.json();
+    if (!session.token) throw new Error('本机会话恢复失败，请稍后重试。');
+    token = session.token;
+    response = await request();
+  }
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     throw new Error(data.error || '操作失败（' + response.status + '），请重试。');
@@ -40,7 +49,7 @@ async function mutate(action) {
   busy = true; $('edit').inert = true; $('newProject').inert = true; $('timelineEditor').inert = true;
   $('saveState').textContent = '正在处理…';
   try { await action(); $('saveState').textContent = '已保存到本机'; }
-  catch (error) { $('saveState').textContent = '未保存'; toast(error.message); }
+  catch (error) { $('saveState').textContent = '未保存'; if ($('edit').open) $('validation').textContent = error.message; toast(error.message); }
   finally {
     busy = false; $('edit').inert = false; $('newProject').inert = false; $('timelineEditor').inert = false;
     if($('timelineEditor').open)refreshWordWave();
