@@ -105,7 +105,8 @@ function render() {
       const b = document.createElement('button'); b.className = 'word'; b.textContent = char;
       const timing = timed ? line.unit_timings[j] : null;
       b.title = timing ? '已对齐 · ' + timing.start.toFixed(3) + ' — ' + timing.end.toFixed(3) : '按单位数估算定位；可在歌词时间轴提取真实时间';
-      if (timing) { b.dataset.start = timing.start; b.dataset.end = timing.end; }
+      b.dataset.start = timing ? timing.start : line.start + j / Math.max(chars.length, 1) * (line.end - line.start);
+      b.dataset.end = timing ? timing.end : line.start + (j+1) / Math.max(chars.length, 1) * (line.end - line.start);
       b.onclick = () => {
         selected = i;
         seek(timing ? timing.start : line.start + j / Math.max(chars.length, 1) * (line.end - line.start));
@@ -140,7 +141,7 @@ function render() {
   $('exportVoice').disabled = $('exportMix').disabled = !p?.rendered_available || !p?.render_complete;
   if (!p?.assets.accompaniment) $('exportMix').disabled = true;
   ['importSong', 'importSource', 'importAccompaniment', 'importLyrics', 'exportLyrics'].forEach(id => $(id).disabled = !p);
-  $('seek').max = duration(); updateClock();
+  $('seek').max = duration(); updateClock(+$('seek').value,true);
 }
 function pause() {
   source.pause(); accompaniment.pause(); clipEnd = null; cancelAnimationFrame(playbackFrame); $('play').textContent = '▶';
@@ -151,7 +152,7 @@ function seek(value) {
   for (const audio of [source, accompaniment]) {
     if (audio.readyState >= 1) audio.currentTime = Math.min(position, audio.duration || position);
   }
-  $('seek').value = position; updateClock();
+  $('seek').value = position; updateClock(position,true);
 }
 async function play(end = null) {
   if (!project()?.assets.source) { toast('请先导入原唱或干声音频。'); return; }
@@ -167,13 +168,14 @@ async function play(end = null) {
     function watchClip() {
       if (source.paused) return;
       if (clipEnd !== null && source.currentTime >= clipEnd) { pause(); return; }
+      $('seek').value = source.currentTime; updateClock(source.currentTime);
       playbackFrame = requestAnimationFrame(watchClip);
     }
     playbackFrame = requestAnimationFrame(watchClip);
   } catch (_) { pause(); toast('无法播放音频，请检查格式或重新导入。'); }
 }
 source.addEventListener('timeupdate', () => {
-  $('seek').value = source.currentTime; updateClock();
+  $('seek').value = source.currentTime; updateClock(source.currentTime);
   if (clipEnd !== null && source.currentTime >= clipEnd) pause();
   if (!source.paused && !accompaniment.paused && Math.abs(source.currentTime - accompaniment.currentTime) > 0.15) {
     accompaniment.currentTime = Math.min(source.currentTime, accompaniment.duration);
@@ -181,10 +183,32 @@ source.addEventListener('timeupdate', () => {
 });
 source.addEventListener('ended', pause);
 source.addEventListener('error', () => { pause(); toast('原唱音频无法解码，请换用 WAV 或 MP3。'); });
-function updateClock() {
-  const time = +$('seek').value;
+function lyricFill(time,start,end) {
+  return end > start ? Math.max(0,Math.min(1,(time-start)/(end-start))) : (time>=end?1:0);
+}
+function paintLyrics(row,time) {
+  row?.querySelectorAll('.word[data-start]').forEach(word=>{
+    word.style.setProperty('--lyric-progress',(lyricFill(time,+word.dataset.start,+word.dataset.end)*100).toFixed(2)+'%');
+  });
+}
+function updateClock(time=+$('seek').value,refreshAll=false) {
   $('clock').textContent = fmt(time) + ' / ' + fmt(duration());
-  document.querySelectorAll('.word[data-start]').forEach(b => b.classList.toggle('playing-word', time >= +b.dataset.start && time < +b.dataset.end));
+  const lines=project()?.lines || [];
+  const index=lines.findIndex(line=>time>=line.start && time<line.end);
+  const rows=$('lyricsList').children;
+  if(refreshAll) Array.from(rows).forEach(row=>paintLyrics(row,time));
+  if(index>=0) {
+    if(index!==selected) {
+      const previous=selected;selected=index;
+      rows[previous]?.classList.remove('selected');rows[index]?.classList.add('selected');
+      paintLyrics(rows[previous],time);
+      if(!source.paused && rows[index]) {
+        const list=$('lyricsList'),lineRect=rows[index].getBoundingClientRect(),listRect=list.getBoundingClientRect();
+        list.scrollTo({top:list.scrollTop+lineRect.top+lineRect.height/2-listRect.top-listRect.height/2,behavior:'smooth'});
+      }
+    }
+    paintLyrics(rows[index],time);
+  } else paintLyrics(rows[selected],time);
   phraseWaveEditor?.setPlayhead(time); wordWaveEditor?.setPlayhead(time);
 }
 const waveValues = new WeakMap();
@@ -319,7 +343,7 @@ async function loadAudio(position = 0, resume = false) {
   }
   $('voiceLabel').textContent = activeVoice === 'rendered' ? '改词演唱（未生成部分保留原唱）' : activeVoice === 'svc' ? '音色转换' : p?.assets.source?.name || '未导入原唱';
   document.querySelector('.track:nth-child(2) small').textContent = p?.assets.accompaniment?.name || '未导入伴奏';
-  $('seek').value = position; updateClock();
+  $('seek').value = position; updateClock(position,true);
 }
 function switchProject(i) {
   if (busy) { toast('当前操作尚未完成。'); return; }
