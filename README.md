@@ -113,3 +113,16 @@ SRT/LRC 导入支持 UTF-8、带 BOM 的 UTF-16 和常见 GBK/GB18030 编码，�
 ## 时间轴优化参考
 
 以本地 SoulX Studio 的实际时间轴、原词校正与生成缓存逻辑为主要参考，并研究 JIZURA 的时间轴拖动、缩放和平移交互，详见 [优化参考与对应改进](docs/studio-reference.md)。顶部“歌词时间轴”可独立提取每个字/英文词的时间、校正原词、拖动波形边界、试听并手动保存；这些时间会参与下一次真实生成。整句“改词”窗口也可直接拖动边界。波形显示按窗口宽度绘制密集细线，放大后使用约 5ms 的底层包络细节。
+
+## Windows 客户端
+
+在本机双击 `dist/AI Lyrics Studio.exe`，打开独立窗口。客户端使用系统 WebView2 显示界面，仍通过本机回环地址连接 Python 服务，工程和模型沿用本项目与 SoulX Studio 的现有位置。首次打开时如服务未运行，客户端会尝试启动它；已有服务会被复用。关闭客户端时，若它启动的服务仍有模型任务，服务将继续运行以保护任务。
+
+当前客户端是此工作区的本机启动器，不是可复制到其他电脑独立运行的安装包：请保留 EXE 在项目的 `dist/` 内，并保留项目代码、Python 依赖、`runtime/`、`data/` 和共享的 SoulX Studio 运行环境。需要 Microsoft Edge WebView2 Runtime。
+
+重建客户端：
+
+```powershell
+python -m pip install -r requirements-desktop.txt
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name "AI Lyrics Studio" desktop/launcher.py
+```
