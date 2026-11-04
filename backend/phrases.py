@@ -2,6 +2,7 @@
 import math
 import re
 from uuid import uuid4
+from backend.generation_params import generation_params
 
 UNIT = re.compile(r"[\u4e00-\u9fff]|[A-Za-z]+(?:'[A-Za-z]+)*")
 
@@ -36,8 +37,9 @@ def merge_next(project, segment_id):
     if index<0:raise FileNotFoundError()
     if index+1>=len(project['lines']):raise ValueError('当前已经是最后一句，无法向后合并。')
     first,second=project['lines'][index:index+2]
-    if first['mode']!=second['mode'] or first['restore']!=second['restore']:
-        raise ValueError('两句生成模式不同，请先统一后再合并。')
+    if (first['mode']!=second['mode'] or first['restore']!=second['restore'] or
+        generation_params(first['mode'],first.get('generation_params')) != generation_params(second['mode'],second.get('generation_params'))):
+        raise ValueError('两句生成模式或参数不同，请先统一后再合并。')
     def join(a,b):
         return a+(' ' if a[-1:].isascii() and a[-1:].isalpha() and b[:1].isascii() and b[:1].isalpha() else '')+b
     merged={**first,'original':join(first['original'],second['original']),

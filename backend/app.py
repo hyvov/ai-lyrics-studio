@@ -277,6 +277,10 @@ def create_app(data_root: Path | None = None) -> FastAPI:
                 if following['end'] - end < .12 - 1e-9:
                     raise ValueError('调整后下一句至少需要保留 120 毫秒。')
                 following['start'] = end
+            if 'generation_params' in value:
+                line['generation_params'] = value['generation_params']
+            elif value.get('mode') != line.get('mode'):
+                line.pop('generation_params', None)
             line.update(start=start, end=end, text=value.get('text'), mode=value.get('mode'), restore=value.get('restore'))
             return view(store.update(project_id, p))
 
@@ -309,6 +313,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             if not re.fullmatch(r'[a-f0-9]{32}\.wav',asset_id) or not (assets/asset_id).is_file():continue
             takes.append({'asset_id':asset_id,'created_at':take.get('created_at'),
                 'lyrics':take.get('lyrics'),'mode':take.get('mode'),'warnings':take.get('warnings',[]),
+                'generation_params':take.get('generation_params'),'seed_used':take.get('seed_used'),
                 'current':asset_id==current.get('asset_id'),'compatible':take.get('fingerprint')==fingerprint(p,line)})
             if len(takes)>=100:break
         return {'takes':takes}

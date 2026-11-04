@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const sourceCode = fs.readFileSync('design/studio.js', 'utf8');
-const helpers = sourceCode.slice(sourceCode.indexOf('function enterOriginalEditor()'), sourceCode.indexOf('function openEdit('));
+const helpers = sourceCode.slice(sourceCode.indexOf('function enterOriginalEditor()'), sourceCode.indexOf('function parameterValues('));
 let activeVoice='rendered', voiceBeforeEditor=null, currentProject={id:'a',rendered_available:true}, position=1.25;
 const context={get activeVoice(){return activeVoice},set activeVoice(v){activeVoice=v},get voiceBeforeEditor(){return voiceBeforeEditor},set voiceBeforeEditor(v){voiceBeforeEditor=v},project:()=>currentProject,source:{currentTime:position},$:()=>({value:position}),loadAudio(p){position=p;if(activeVoice==='rendered'&&!currentProject.rendered_available)activeVoice='source'}};
 vm.createContext(context);vm.runInContext(helpers,context);

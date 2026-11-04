@@ -3,12 +3,14 @@ import argparse
 import json
 import os
 import shutil
+import secrets
 import sys
 import traceback
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
+from backend.generation_params import generation_params
 
 
 def report(stage,**values):
@@ -47,9 +49,11 @@ def run(config):
         crop=audio[start:end]
         if not len(crop) or np.max(np.abs(crop))<.001:raise ValueError('唱句音频为空或接近静音。')
         ref=directory/(line['id']+'-ying-reference.wav');sf.write(ref,crop,sr,subtype='PCM_24')
+        parameters=generation_params('ying',line.get('generation_params'))
+        seed_used=parameters['seed'] if parameters['seed']>=0 else secrets.randbelow(2147483648)
         with torch.inference_mode():
             generated,rate=model(ref_audio_path=str(ref),melody_audio_path=str(ref),ref_text=line['original'],target_text=line['text'],
-                lrc_align_mode='sentence_level',sil_len_to_end=.5,t_shift=.5,nfe_step=64,cfg_strength=2.5,seed=42)
+                lrc_align_mode='sentence_level',sil_len_to_end=parameters['silence'],t_shift=parameters['t_shift'],nfe_step=parameters['steps'],cfg_strength=parameters['cfg'],seed=seed_used)
         generated=generated.detach().float().cpu()
         if generated.ndim!=2 or generated.shape[-1]<1 or not torch.isfinite(generated).all():raise ValueError('生成的人声音频异常。')
         generated=generated.mean(dim=0,keepdim=True)
@@ -60,7 +64,7 @@ def run(config):
             report('alignment_warning',message=f'第 {i} 句的生成时长与原句不同，已按边界截取或补静音，请试听。')
         samples=np.pad(samples[:required],(0,max(0,required-len(samples))))
         path=directory/(line['id']+'-generated.wav');sf.write(path,samples,24000,subtype='PCM_16')
-        outputs.append({'segment_id':line['id'],'path':str(path),'sample_rate':24000,'frames':required,'reference_safe':True})
+        outputs.append({'segment_id':line['id'],'path':str(path),'sample_rate':24000,'frames':required,'reference_safe':True,'generation_params':parameters,'seed_used':seed_used})
         takes.append({'start':line['start'],'end':line['end'],'path':str(path)})
     del model
     torch.cuda.empty_cache()

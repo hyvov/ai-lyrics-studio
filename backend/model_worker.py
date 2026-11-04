@@ -9,6 +9,7 @@ import gc
 import inspect
 import json
 import os
+import secrets
 import sys
 import traceback
 from pathlib import Path
@@ -22,6 +23,7 @@ from backend.singing import units, repair_alignment, repair_score_pitches
 from backend.timeline import timings_to_slots
 from backend.audio_compose import match_vocal_level
 from backend.score_alignment import reconcile_note_timing
+from backend.generation_params import generation_params
 
 
 def report(stage, **data):
@@ -309,8 +311,11 @@ def run(config):
             sf.write(prompt_path, samples, sr)
             report('alignment_warning', message='未找到独立参考句，已遮盖原句中改动的字，请试听确认。')
         inputs = {'prompt': processor.process(copy.deepcopy(prompt), str(prompt_path)), 'target': processor.process(copy.deepcopy(target), None)}
+        parameters = generation_params(line['mode'],line.get('generation_params'))
+        seed_used = parameters['seed'] if parameters['seed'] >= 0 else secrets.randbelow(2147483648)
+        torch.manual_seed(seed_used)
         with torch.inference_mode():
-            generated = model.infer(inputs, auto_shift=False, pitch_shift=0, n_steps=32, cfg=3,
+            generated = model.infer(inputs, auto_shift=False, pitch_shift=0, n_steps=parameters['steps'], cfg=parameters['cfg'],
                                     control=line['mode'], use_fp16=True).squeeze().float().cpu().numpy()
         required = round((line['end'] - line['start']) * sr)
         if len(generated) < required - min(sr * .25, required * .2) or not np.isfinite(generated).all() or np.max(np.abs(generated)) < .0001:
@@ -318,7 +323,7 @@ def run(config):
         generated = np.pad(generated[:required], (0, max(0, required - len(generated))))
         output = jobdir / (line['id'] + '-generated.wav')
         sf.write(output, generated, sr, subtype='PCM_16')
-        outputs.append({'segment_id': line['id'], 'path': str(output), 'sample_rate': sr, 'frames': required, 'reference_safe': True})
+        outputs.append({'segment_id': line['id'], 'path': str(output), 'sample_rate': sr, 'frames': required, 'reference_safe': True, 'generation_params':parameters, 'seed_used':seed_used})
     if any(line.get('restore') for line,_,_,_ in metadata):
         import shutil
         from backend.svc_worker import run as convert_voice

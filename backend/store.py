@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import copy
+from backend.generation_params import generation_params
 import math
 import os
 import re
@@ -57,6 +58,7 @@ def validate_project(value: dict) -> dict:
         previous_end = b
         if line.get('mode') not in ('melody', 'score', 'ying') or not isinstance(line.get('restore'), bool):
             raise ValueError('生成参数无效。')
+        generation_params(line['mode'], line.get('generation_params'))
     return {'name': name, 'duration': duration, 'lines': lines}
 
 

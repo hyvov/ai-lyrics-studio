@@ -4,6 +4,7 @@ import json
 import math
 import re
 from difflib import SequenceMatcher
+from backend.generation_params import generation_params
 
 
 def units(text):
@@ -94,6 +95,8 @@ def prefer_masked_reference(line, alignment):
 
 def fingerprint(project, line):
     values = {k: line.get(k) for k in ('id', 'original', 'text', 'start', 'end', 'mode', 'restore')}
+    parameters = generation_params(line.get('mode'), line.get('generation_params'))
+    if parameters != generation_params(line.get('mode')): values['generation_params'] = parameters
     for key in ('start', 'end'):
         values[key] = round(float(values[key]), 6)
     payload = {'source': project.get('assets', {}).get('source', {}).get('id'),

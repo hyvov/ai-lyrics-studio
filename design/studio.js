@@ -4,6 +4,9 @@ source.preload = accompaniment.preload = 'metadata';
 let projects = [], current = 0, selected = 0, token = '', busy = false;
 let activeVoice = 'source', activeJob = null, pollTimer = null, modelReady = false, svcReady = false, yingReady = false;
 let batchQueue = [], batchProjectId = null;
+const PARAM_DEFAULTS = {melody:{steps:32,cfg:3,seed:-1},score:{steps:32,cfg:3,seed:-1},ying:{steps:64,cfg:2.5,seed:42,t_shift:.5,silence:.5}};
+const PARAM_INPUTS = {steps:'paramSteps',cfg:'paramCfg',seed:'paramSeed',t_shift:'paramShift',silence:'paramSilence'};
+let parameterDrafts = {}, parameterMode = 'melody';
 let voiceBeforeEditor = null;
 let timelineSelected = 0, timelineDirty = false;
 const lyricUnits = text => text.replaceAll('<SP>', ' ').match(/[\u4e00-\u9fff]|[A-Za-z]+(?:'[A-Za-z]+)*/g) || [];
@@ -333,6 +336,22 @@ function leaveOriginalEditor() {
     loadAudio(source.currentTime || +$('seek').value);
   }
 }
+function parameterValues(mode=parameterMode) {
+  return Object.fromEntries(Object.keys(PARAM_DEFAULTS[mode]).map(key => [key,$(PARAM_INPUTS[key]).value]));
+}
+function showParameterMode(mode) {
+  parameterMode=mode;
+  const values={...PARAM_DEFAULTS[mode],...(parameterDrafts[mode] || {})};
+  for(const key of Object.keys(values)) $(PARAM_INPUTS[key]).value=values[key];
+  document.querySelectorAll('.ying-param').forEach(element=>{element.hidden=mode!=='ying';});
+}
+function validParameters() {
+  return Object.keys(PARAM_DEFAULTS[parameterMode]).every(key=>{
+    const input=$(PARAM_INPUTS[key]); return input.value!=='' && Number.isFinite(input.valueAsNumber) && input.checkValidity();
+  });
+}
+$('resetParams').onclick=()=>{parameterDrafts[parameterMode]={};showParameterMode(parameterMode);validate();};
+Object.values(PARAM_INPUTS).forEach(id=>$(id).oninput=validate);
 function openEdit(i) {
   if (busy) return;
   const line = project()?.lines[i]; if (!line) return;
@@ -346,6 +365,8 @@ function openEdit(i) {
   $('regenerate').disabled = !!activeJob || !modelReady || !!project()?.source_issue;
   $('regenerate').title = project()?.source_issue || '';
   document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('chosen', b.dataset.mode === line.mode));
+  parameterDrafts = {[line.mode]:{...(line.generation_params || {})}};
+  showParameterMode(line.mode);
   syncRestore();
   ensurePhraseWave(); validate(); $('edit').showModal(); drawEditorWave();
 }
@@ -356,7 +377,7 @@ function validate() {
   const previous = p.lines[selected - 1], next = p.lines[selected + 1];
   const ok = $('start').value !== '' && $('end').value !== '' && Number.isFinite(a) && Number.isFinite(b)
     && a >= 0 && b-a >= .12-1e-9 && b <= duration() && (!previous || a >= previous.start+.12-1e-9)
-    && (!next || b <= next.end-.12+1e-9) && chars.length > 0;
+    && (!next || b <= next.end-.12+1e-9) && chars.length > 0 && validParameters();
   $('save').disabled = !ok || busy;
   $('slotCount').textContent = chars.length + ' / ' + n;
   $('slots').replaceChildren();
@@ -364,7 +385,7 @@ function validate() {
   const mode = document.querySelector('[data-mode].chosen')?.dataset.mode;
   $('slotHint').textContent = mode === 'ying' ? 'YingMusic 可尝试不同字数；改动较大时请试听节奏和发音。' : chars.length === n ? '字数一致；实际旋律槽位与发音适配仍需模型分析。' : '当前模式要求新旧歌词发音单位数一致。';
   const affected = [previous && a < previous.end ? '上一句终点' : '', next && b > next.start ? '下一句起点' : ''].filter(Boolean);
-  $('validation').textContent = ok ? (affected.length ? '保存时将同步调整'+affected.join('和')+'；受影响句子需要重新对齐和生成。' : (p.source_issue ? '当前为无演唱测试音，只能编辑与试听，不能生成。' : '保存后写入本机工程。')) : '歌词不能为空；当前句和相邻句均须至少保留 120 毫秒，边界不能超出音频。';
+  $('validation').textContent = ok ? (affected.length ? '保存时将同步调整'+affected.join('和')+'；受影响句子需要重新对齐和生成。' : (p.source_issue ? '当前为无演唱测试音，只能编辑与试听，不能生成。' : '保存后写入本机工程。')) : !validParameters() ? '生成参数超出范围或为空，请检查参数设置。' : '歌词不能为空；当前句和相邻句均须至少保留 120 毫秒，边界不能超出音频。';
   drawEditorWave(); return ok;
 }
 $('newLyrics').oninput = validate;
@@ -383,7 +404,8 @@ function savePhrase() {
   const p=project(), line=p.lines[selected];
   return api('projects/'+p.id+'/segments/'+line.id+'/phrase', {method:'PUT',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({revision:p.revision,text:$('newLyrics').value,start:+$('start').value,end:+$('end').value,
-      mode:document.querySelector('[data-mode].chosen').dataset.mode,restore:$('restore').checked})});
+      mode:document.querySelector('[data-mode].chosen').dataset.mode,restore:$('restore').checked,
+      generation_params:Object.fromEntries(Object.entries(parameterValues()).map(([key,value])=>[key,Number(value)]))})});
 }
 $('closeEdit').onclick = () => { if (!busy) { pause(); leaveOriginalEditor(); $('edit').close(); } };
 $('edit').addEventListener('cancel', event => { if (busy) event.preventDefault(); else { pause(); leaveOriginalEditor(); } });
@@ -394,7 +416,9 @@ function syncRestore() {
   $('restore').title=!score?'仅 MIDI 模式可使用':!svcReady?'本地 SVC 组件未就绪':'';
 }
 document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
+  parameterDrafts[parameterMode]=parameterValues();
   document.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('chosen', x === b));
+  showParameterMode(b.dataset.mode);
   if(b.dataset.mode!=='score')$('restore').checked=false;
   syncRestore();validate();
 });
@@ -741,7 +765,9 @@ $('takeHistory').onclick=async()=>{
       const description=document.createElement('div');
       const label=document.createElement('strong');label.textContent='版本 '+(result.takes.length-i)+(take.current?' · 当前使用':'');
       const detail=document.createElement('p');detail.className='muted tiny';
-      detail.textContent=(take.created_at?new Date(take.created_at*1000).toLocaleString('zh-CN'):'历史版本')+' · '+(take.lyrics||'歌词信息未记录')+(take.compatible?'':' · 与当前歌词或边界不一致，仅可试听');
+      const params=take.generation_params;
+      const parameterText=params ? ' · '+params.steps+' 步 · CFG '+params.cfg+(take.seed_used != null?' · 种子 '+take.seed_used:'') : '';
+      detail.textContent=(take.created_at?new Date(take.created_at*1000).toLocaleString('zh-CN'):'历史版本')+' · '+(take.lyrics||'歌词信息未记录')+parameterText+(take.compatible?'':' · 与当前歌词、边界或参数不一致，仅可试听');
       description.append(label,detail);
       const audio=document.createElement('audio');audio.controls=true;audio.preload='none';audio.src='/api/assets/'+take.asset_id;audio.setAttribute('aria-label','试听版本 '+(result.takes.length-i));
       const choose=document.createElement('button');choose.textContent=take.current?'使用中':'使用此版本';choose.disabled=take.current||!take.compatible||!!activeJob;

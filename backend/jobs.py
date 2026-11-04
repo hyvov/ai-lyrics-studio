@@ -421,6 +421,8 @@ class RenderJobs:
                     shutil.copyfile(src, self.assets / asset_id); created.append(asset_id)
                     take = {'asset_id': asset_id, 'fingerprint': fingerprint(snapshot, line), 'job_id': job['id'], 'warnings': list(job['warnings']),
                             'reference_safe': output.get('reference_safe') is True}
+                    if isinstance(output.get('generation_params'),dict): take['generation_params'] = output['generation_params']
+                    if output.get('seed_used') is not None: take['seed_used'] = output['seed_used']
                     current.setdefault('renders', {})[line['id']] = take
                     current.setdefault('render_history', []).append({'segment_id': line['id'], **take,
                         'created_at':job.get('created_at'),

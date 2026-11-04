@@ -132,3 +132,7 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name "AI Lyrics
 编辑唱句时可选择 YingMusic，使用同级 `YingMusic-Singer-Plus-main` 工作区已有的模型和 `.venv`，从原唱的人声旋律生成改词；可尝试不同字数，发音、旋律与片段边界仍需试听。原有旋律和 MIDI 模式不变，历史结果仍可试听。批量中混用模式时客户端会自动按模型分批。
 
 此功能不下载模型；移动本机 YingMusic 工作区时，可用 `AI_LYRICS_YING_ROOT` 指定其路径。模型和依赖遵循 YingMusic-Singer-Plus 项目及其组件各自的许可证，详见其仓库的 LICENSE 与 LICENSE-STABILITY。生成音频按当前唱句时间边界拼接，过长或不足会提示试听；请勿将单次自动识词结果视为音质保证。
+
+### 唱句生成参数
+
+在“改词”弹窗展开“生成参数”。旋律和 MIDI 模式可设置采样步数、引导强度（CFG）和种子；YingMusic 另可设置采样时间偏移与参考末尾静音。参数按句保存，修改后该句需要重新生成，其他句的结果不受影响。默认值与此前版本一致；种子 `-1` 表示随机，实际种子可在歌词时间轴的“历史演唱”中查看。步数增加会增加计算时间，不保证效果必然更好，建议固定种子逐项试听对比。
