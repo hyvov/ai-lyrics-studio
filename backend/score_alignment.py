@@ -16,12 +16,18 @@ def reconcile_note_timing(words, spans, note_words, durations, pitches, types):
     notes=[];cursor=0.
     for word,duration,pitch,kind in zip(note_words,durations,pitches,types):
         notes.append((cursor,cursor+duration,word,int(pitch),int(kind)));cursor+=duration
-    attack_ranges=[]
+    attack_ranges=[]; current_word=None; valid_events=True
     for start,end,word,pitch,kind in notes:
-        if kind==2 and word!='<SP>': attack_ranges.append([word,start,end])
-        elif kind==3 and word!='<SP>' and attack_ranges: attack_ranges[-1][2]=end
+        if kind==1 and word=='<SP>':
+            continue
+        if kind==2 and word!='<SP>':
+            current_word=word; attack_ranges.append([word,start,end])
+        elif kind==3 and word!='<SP>' and attack_ranges and current_word is not None and word.casefold()==current_word.casefold():
+            attack_ranges[-1][2]=end
+        else:
+            valid_events=False
     spoken=[(a,b,w) for a,b,w in word_bounds if w!='<SP>']
-    aligned=len(attack_ranges)==len(spoken) and all(
+    aligned=valid_events and len(attack_ranges)==len(spoken) and all(
         text.casefold()==word.casefold() and abs(a-start)<=max(.02,min(.06,(b-a)*.15)) and abs(b-end)<=max(.02,min(.06,(b-a)*.15))
         for (a,b,word),(text,start,end) in zip(spoken,attack_ranges))
     if aligned: return note_words,durations,pitches,types,False

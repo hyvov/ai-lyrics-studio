@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from backend.runtime import ROOT, Runtime
 from backend.media import source_issue
-from backend.singing import composition_fingerprint, fingerprint, svc_fingerprint, validate_render, validate_alignment, choose_reference_phrase
+from backend.singing import composition_fingerprint, fingerprint, svc_fingerprint, validate_render, validate_alignment, choose_reference_phrase, prefer_masked_reference
 from backend.timeline import alignment_fingerprint, cached_alignment, validate_timings
 from backend.store import Conflict,snapshot_lyrics
 
@@ -82,6 +82,8 @@ class RenderJobs:
             if kind == 'render':
                 references = {}
                 for line in selected:
+                    if prefer_masked_reference(line, config['saved_alignments'].get(line['id'])):
+                        continue
                     reference = choose_reference_phrase(p['lines'], line)
                     if reference:
                         references[line['id']] = reference['id']

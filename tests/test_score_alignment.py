@@ -17,6 +17,10 @@ class NoteAlignmentTests(unittest.TestCase):
         result=reconcile_note_timing(['你','你'],[.5,.5],['你'],[1.],[60],[2])
         self.assertEqual(result[0],['你','你']);self.assertEqual(result[3],[2,2])
 
+    def test_wrong_slur_word_is_repaired_even_when_attacks_match(self):
+        result=reconcile_note_timing(['我','爱'],[.5,.5],['我','错','爱'],[.25,.25,.5],[60,60,62],[2,3,2])
+        self.assertEqual(result[0],['我','爱']);self.assertEqual(result[3],[2,2]);self.assertTrue(result[4])
+
     def test_too_short_unit_is_rejected(self):
         with self.assertRaises(ValueError):
             reconcile_note_timing(['我','爱'],[.01,.99],['我'],[1.],[60],[2])

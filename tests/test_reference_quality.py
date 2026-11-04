@@ -4,9 +4,16 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 from backend.model_worker import mask_changed_reference
+from backend.singing import prefer_masked_reference
 
 
 class ReferenceQualityTests(unittest.TestCase):
+    def test_saved_timing_avoids_an_unnecessary_reference(self):
+        line={'original':'baby baby想爱不能爱的哀愁','text':'baby baby想休不能休的哀愁','start':0.,'end':4.}
+        words=['baby','baby','想','爱','不','能','爱','的','哀','愁']
+        alignment={'unit_timings':[{'text':w,'start':i*.4,'end':(i+1)*.4} for i,w in enumerate(words)]}
+        self.assertTrue(prefer_masked_reference(line,alignment))
+        self.assertFalse(prefer_masked_reference(line,None))
     def setUp(self):
         self.prompt = {'text':'我 明 白 有 你','duration':'0.5 0.5 0.5 0.5 0.5',
                        'note_pitch':'60 60 60 60 60','note_type':'2 2 2 2 2',

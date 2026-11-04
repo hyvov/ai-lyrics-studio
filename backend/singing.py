@@ -69,6 +69,29 @@ def choose_reference_phrase(lines, target):
     return min(candidates, key=lambda item:item[0])[1] if candidates else None
 
 
+def prefer_masked_reference(line, alignment):
+    """Use verified word spans to avoid analyzing an unnecessary reference phrase."""
+    if not alignment: return False
+    before, after = units(line['original']), units(line['text'])
+    if len(before) != len(after): return False
+    changed = [i for i,(a,b) in enumerate(zip(before,after)) if a.casefold()!=b.casefold()]
+    unchanged = len(before)-len(changed)
+    if not changed or unchanged < 2 or (len(changed)/len(before) > .6 and unchanged < 4): return False
+    timings = alignment.get('unit_timings',[])
+    if len(timings) != len(before): return False
+    start,end = line['start'],line['end']
+    ranges = []
+    for index in changed:
+        span = timings[index]
+        a,b=max(start,float(span['start'])-.025),min(end,float(span['end'])+.035)
+        if b<=a: return False
+        if ranges and a<=ranges[-1][1]: ranges[-1]=(ranges[-1][0],max(b,ranges[-1][1]))
+        else: ranges.append((a,b))
+    total=end-start
+    remaining=total-sum(b-a for a,b in ranges)
+    return total>0 and remaining>=1.6 and remaining/total>=.5
+
+
 def fingerprint(project, line):
     values = {k: line.get(k) for k in ('id', 'original', 'text', 'start', 'end', 'mode', 'restore')}
     for key in ('start', 'end'):
