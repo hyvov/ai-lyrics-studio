@@ -21,6 +21,7 @@ os.environ.setdefault('MPLCONFIGDIR', str(ROOT / 'runtime/matplotlib-cache'))
 from backend.singing import units, repair_alignment, repair_score_pitches
 from backend.timeline import timings_to_slots
 from backend.audio_compose import match_vocal_level
+from backend.score_alignment import reconcile_note_timing
 
 
 def report(stage, **data):
@@ -108,13 +109,16 @@ def align_words(aligner, waveform, text, sr, diagnostic_path=None):
     return words, spans, indices
 
 
-def mask_changed_reference(prompt, original, replacement, waveform, sr):
+def mask_changed_reference(prompt, original, replacement, waveform, sr, force=False):
     """Remove edited syllables from a same-phrase timbre reference."""
     import numpy as np
     before, after = units(original), units(replacement)
     changed = {i for i, (a, b) in enumerate(zip(before, after)) if a.lower() != b.lower()}
     if len(before) != len(after) or not changed or len(changed) == len(before):
-        raise ValueError('没有可用的独立音色参考句；请导入包含其他唱句的歌词和原唱。')
+        if force: raise ValueError('没有可用的独立音色参考句；请导入包含其他唱句的歌词和原唱。')
+        return None
+    unchanged = len(before) - len(changed)
+    if not force and (unchanged < 2 or len(changed) / len(before) > .6 and unchanged < 4): return None
     result = copy.deepcopy(prompt)
     words = result['text'].split(); durations = [float(x) for x in result['duration'].split()]
     pitches = result['note_pitch'].split(); types = result['note_type'].split()
@@ -122,10 +126,14 @@ def mask_changed_reference(prompt, original, replacement, waveform, sr):
     for i, (word, duration, kind) in enumerate(zip(words, durations, types)):
         if word != '<SP>' and kind == '2': slot += 1
         if word != '<SP>' and slot in changed:
-            ranges.append((max(0., cursor-.025), min(len(samples)/sr, cursor+duration+.035)))
+            start, end = max(0., cursor-.025), min(len(samples)/sr, cursor+duration+.035)
+            if ranges and start <= ranges[-1][1]: ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
+            else: ranges.append((start, end))
             words[i], pitches[i], types[i] = '<SP>', '0', '1'
         cursor += duration
     if slot + 1 != len(before): raise ValueError('音色参考的音符与歌词不一致。')
+    retained = len(samples) / sr - sum(end-start for start,end in ranges)
+    if not force and (retained < 1.6 or retained / (len(samples)/sr) < .5): return None
     for start, end in ranges: samples[round(start*sr):round(end*sr)] = 0
     f0 = [float(x) for x in result['f0'].split()]
     for i in range(len(f0)):
@@ -234,9 +242,12 @@ def run(config):
         pitches, types = notes['note_pitch'], notes['note_type']
         if not note_words or len({len(note_words), len(durations), len(pitches), len(types)}) != 1:
             raise ValueError('音符转录失败，请调整边界或换用清晰干声。')
+        note_words,durations,pitches,types,timing_repaired = reconcile_note_timing(words,spans,note_words,durations,pitches,types)
+        if timing_repaired and line['id'] in target_ids:
+            report('alignment_warning',message=f'第 {position} 个处理片段的音符已按逐字时间校正，请试听。')
         if line['mode']=='score':
             pitches,repaired=repair_score_pitches(pitches,types,durations)
-            if repaired:
+            if repaired and line['id'] in target_ids:
                 report('pitch_warning',message=f'第 {position} 个处理片段有 {repaired} 个无效 MIDI 音高，已参考邻近音符修复，请试听。')
         # Map type=2 word onsets to aligned original words. Slur notes (type=3)
         # retain the same original and new pronunciation; silence stays silence.
@@ -283,11 +294,17 @@ def run(config):
     for i, (line, path, prompt, target) in enumerate(metadata):
         report('generating', segment_id=line['id'], position=i + 1, total=len(metadata))
         ref_id = config.get('references', {}).get(line['id'])
-        if ref_id in by_id:
+        samples, _ = sf.read(path, dtype='float32')
+        masked = mask_changed_reference(prompt, line['original'], line['text'], samples, sr)
+        if masked is not None:
+            prompt, samples = masked
+            prompt_path = jobdir / (line['id'] + '-masked-reference.wav')
+            sf.write(prompt_path, samples, sr)
+            report('reference_masked', segment_id=line['id'])
+        elif ref_id in by_id:
             prompt_path, prompt = by_id[ref_id]
         else:
-            samples, _ = sf.read(path, dtype='float32')
-            prompt, samples = mask_changed_reference(prompt, line['original'], line['text'], samples, sr)
+            prompt, samples = mask_changed_reference(prompt, line['original'], line['text'], samples, sr, force=True)
             prompt_path = jobdir / (line['id'] + '-masked-reference.wav')
             sf.write(prompt_path, samples, sr)
             report('alignment_warning', message='未找到独立参考句，已遮盖原句中改动的字，请试听确认。')

@@ -8,11 +8,18 @@ from unittest.mock import MagicMock, patch
 from backend.singing import repair_score_pitches
 
 from backend.jobs import RenderJobs
-from backend.singing import units, fingerprint, composition_fingerprint, repair_alignment, validate_render
+from backend.singing import units, fingerprint, composition_fingerprint, repair_alignment, validate_render, choose_reference_phrase
 from backend.store import Store
 
 
 class SingingTests(unittest.TestCase):
+    def test_reference_avoids_nearby_similar_lyrics_and_language_mismatch(self):
+        target={'id':'a','start':0,'end':4,'original':'我明白有你','text':'我明白有他'}
+        similar={'id':'b','start':4,'end':8,'original':'我明白有她'}
+        english={'id':'c','start':8,'end':12,'original':'hello baby'}
+        distinct={'id':'d','start':12,'end':16,'original':'春风吹过'}
+        self.assertEqual(choose_reference_phrase([target,similar,english,distinct],target)['id'],'d')
+        self.assertIsNone(choose_reference_phrase([target],target))
     def test_score_pitch_repair_uses_closest_voiced_note(self):
         pitches,repaired=repair_score_pitches([0,60,0,67,0],[1,2,2,3,2],[.2,.3,.1,.5,.2])
         self.assertEqual(pitches,[0,60,60,67,67]);self.assertEqual(repaired,2)

@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from backend.runtime import ROOT, Runtime
 from backend.media import source_issue
-from backend.singing import composition_fingerprint, fingerprint, svc_fingerprint, validate_render, validate_alignment
+from backend.singing import composition_fingerprint, fingerprint, svc_fingerprint, validate_render, validate_alignment, choose_reference_phrase
 from backend.timeline import alignment_fingerprint, cached_alignment, validate_timings
 from backend.store import Conflict,snapshot_lyrics
 
@@ -82,12 +82,8 @@ class RenderJobs:
             if kind == 'render':
                 references = {}
                 for line in selected:
-                    candidates = [other for other in p['lines'] if other['id'] != line['id']
-                                  and (other['end'] <= line['start'] or other['start'] >= line['end'])
-                                  and 1 <= other['end'] - other['start'] <= 20
-                                  and other['original'].strip() and other['original'] != line['original']]
-                    if candidates:
-                        reference = min(candidates, key=lambda other: abs(other['start'] - line['start']))
+                    reference = choose_reference_phrase(p['lines'], line)
+                    if reference:
                         references[line['id']] = reference['id']
                 ids = set(references.values()) - {line['id'] for line in selected}
                 config['reference_segments'] = [dict(line, text=line['original'], restore=False)

@@ -49,8 +49,9 @@ def run(config, nested=False):
     prompt=load_wav(config['reference'],cfg.audio.sample_rate).to('cuda')
     target=load_wav(config['target'],cfg.audio.sample_rate).to('cuda')
     report('svc_generate')
+    if nested: torch.manual_seed(42)
     with torch.inference_mode():
-        generated,_=model.infer(prompt,target,pitch[0],pitch[1],n_steps=32,cfg=1.,use_fp16=True,
+        generated,_=model.infer(prompt,target,pitch[0],pitch[1],n_steps=32,cfg=3. if nested else 1.,use_fp16=True,
             progress_callback=lambda completed,total:report('svc_generate',position=completed,total=total))
     data=generated.squeeze().float().cpu().numpy()
     if data.ndim!=1 or not len(data) or not np.isfinite(data).all() or np.max(np.abs(data))<.0001:

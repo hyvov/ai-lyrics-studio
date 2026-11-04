@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import re
+from difflib import SequenceMatcher
 
 
 def units(text):
@@ -43,6 +44,29 @@ def validate_render(project, segment_ids):
         if line.get('restore') and line.get('mode')!='score':
             raise ValueError('原句音色转换仅支持 MIDI 模式。')
     return selected
+
+
+def choose_reference_phrase(lines, target):
+    """Rank non-overlapping source phrases without leaking the target lyric."""
+    original = [x.casefold() for x in units(target['original'])]
+    replacement = units(target['text'])
+    english_ratio = sum(bool(re.fullmatch(r'[A-Za-z]+(?:\'[A-Za-z]+)*', x)) for x in replacement) / len(replacement)
+    candidates = []
+    for other in lines:
+        if other['id'] == target['id'] or not (other['end'] <= target['start'] or other['start'] >= target['end']): continue
+        length = other['end'] - other['start']
+        if not 1 <= length <= 20: continue
+        try: words = [x.casefold() for x in units(other['original'])]
+        except ValueError: continue
+        if words == original: continue
+        ratio = sum(bool(re.fullmatch(r'[a-z]+(?:\'[a-z]+)*', x)) for x in words) / len(words)
+        similarity = SequenceMatcher(None, original, words).ratio()
+        midpoint = (other['start'] + other['end']) / 2
+        target_midpoint = (target['start'] + target['end']) / 2
+        rank = (bool(ratio) != bool(english_ratio), abs(ratio-english_ratio), similarity >= .65,
+                not 3 <= length <= 8, similarity*.5 + min(2.5, abs(midpoint-target_midpoint)/25))
+        candidates.append((rank, other))
+    return min(candidates, key=lambda item:item[0])[1] if candidates else None
 
 
 def fingerprint(project, line):
