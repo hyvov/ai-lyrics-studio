@@ -82,7 +82,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Referrer-Policy'] = 'same-origin'
         response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'"
-        if request.url.path.startswith('/api/'):
+        if request.url.path.startswith('/api/') or request.url.path == '/' or request.url.path.endswith(('.html', '.css', '.js')):
             response.headers['Cache-Control'] = 'no-store'
         return response
 
@@ -123,6 +123,14 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     @app.post('/api/projects', status_code=201)
     async def create(request: Request):
         return view(store.create(await body(request)))
+
+    @app.delete('/api/projects/{project_id}')
+    def delete_project(project_id: str):
+        with jobs.lock:
+            active = jobs.jobs.get(jobs.active) if jobs.active else None
+            if active and active.get('project_id') == project_id:
+                raise Conflict('当前工程正在处理模型任务，完成后才能删除。')
+            return store.delete(project_id, assets)
 
     @app.put('/api/projects/{project_id}')
     async def update(project_id: str, request: Request):
@@ -243,7 +251,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     @app.post('/api/projects/{project_id}/svc', status_code=202)
     async def convert_voice(project_id: str, request: Request):
         value=await body(request)
-        return jobs.submit_svc(project_id,value.get('revision'),value.get('target_kind'))
+        return jobs.submit_svc(project_id,value.get('revision'),value.get('target_kind'),value.get('options'))
 
     @app.post('/api/projects/{project_id}/compose', status_code=202)
     async def compose_audio(project_id: str, request: Request):
@@ -267,21 +275,33 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             if start < 0 or end > p['duration'] or end - start < .12 - 1e-9:
                 raise ValueError('唱句须在音频范围内且至少保留 120 毫秒。')
             line = p['lines'][index]
+            old_text = line['text']
+            old_bounds = (line['start'], line['end'])
             previous = p['lines'][index - 1] if index else None
             following = p['lines'][index + 1] if index + 1 < len(p['lines']) else None
             if previous and start < previous['end']:
                 if start - previous['start'] < .12 - 1e-9:
                     raise ValueError('调整后上一句至少需要保留 120 毫秒。')
                 previous['end'] = start
+                previous.pop('midi_note_edits', None)
             if following and end > following['start']:
                 if following['end'] - end < .12 - 1e-9:
                     raise ValueError('调整后下一句至少需要保留 120 毫秒。')
                 following['start'] = end
+                following.pop('midi_note_edits', None)
             if 'generation_params' in value:
                 line['generation_params'] = value['generation_params']
             elif value.get('mode') != line.get('mode'):
                 line.pop('generation_params', None)
             line.update(start=start, end=end, text=value.get('text'), mode=value.get('mode'), restore=value.get('restore'))
+            if 'midi_slots' in value:
+                line['midi_slots'] = value['midi_slots']
+            elif line.get('midi_slots') and line['text'] != old_text:
+                line.pop('midi_slots', None)
+            if 'midi_note_edits' in value:
+                line['midi_note_edits'] = value['midi_note_edits']
+            elif (start, end) != old_bounds:
+                line.pop('midi_note_edits', None)
             return view(store.update(project_id, p))
 
     @app.post('/api/projects/{project_id}/segments/{segment_id}/structure')
@@ -298,6 +318,45 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             else:
                 raise ValueError('请选择拆分或合并。')
             return view(store.update(project_id,p))
+
+    @app.get('/api/projects/{project_id}/segments/{segment_id}/midi-notes')
+    def midi_notes(project_id: str, segment_id: str):
+        """Read source-note analysis from a compatible completed job."""
+        import re
+        p = store.get(project_id)
+        line = next((item for item in p['lines'] if item['id'] == segment_id), None)
+        if line is None:
+            raise FileNotFoundError()
+        source = p.get('assets', {}).get('source', {}).get('id')
+        for take in reversed(p.get('render_history', [])):
+            job_id = take.get('job_id', '')
+            if (take.get('segment_id') != segment_id or take.get('original') != line['original']
+                    or take.get('start') != line['start'] or take.get('end') != line['end']
+                    or not re.fullmatch(r'[a-f0-9]{32}', job_id)):
+                continue
+            directory = jobs.root / job_id
+            try:
+                config = json.loads((directory / 'input.json').read_text(encoding='utf-8'))
+                if not source or Path(config['source']).name != source:
+                    continue
+                prompt = json.loads((directory / (segment_id + '-metadata.json')).read_text(encoding='utf-8'))['prompt']
+                words = prompt['text'].split()
+                durations = [float(x) for x in prompt['duration'].split()]
+                pitches = [int(x) for x in prompt['note_pitch'].split()]
+                types = [int(x) for x in prompt['note_type'].split()]
+                if not words or len({len(words), len(durations), len(pitches), len(types)}) != 1:
+                    continue
+                cursor, notes = float(line['start']), []
+                for index, (word, duration, pitch, kind) in enumerate(zip(words, durations, pitches, types)):
+                    if not math.isfinite(duration) or duration <= 0 or not 0 <= pitch <= 127 or kind not in (1, 2, 3):
+                        raise ValueError('音符分析数据无效。')
+                    notes.append({'index': index, 'text': word, 'start': round(cursor, 6),
+                                  'end': round(cursor + duration, 6), 'pitch': pitch, 'type': kind})
+                    cursor += duration
+                return {'available': True, 'notes': notes}
+            except (OSError, KeyError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+        return {'available': False, 'notes': []}
 
     @app.get('/api/projects/{project_id}/segments/{segment_id}/takes')
     def list_takes(project_id: str, segment_id: str):
@@ -370,6 +429,9 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             if not isinstance(text,str) or not text.strip():
                 raise ValueError('原唱实际唱词不能为空。')
             text = text.strip(); units(text)
+            if text != line['original']:
+                line.pop('midi_note_edits', None)
+                line.pop('midi_slots', None)
             if line['text'] == line['original']:
                 line['text'] = text
             line['original'] = text

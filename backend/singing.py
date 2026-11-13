@@ -18,6 +18,55 @@ def units(text):
     return found
 
 
+def replacement_unit_map(original, replacement):
+    """Map each original lyric unit to a replacement unit, allowing many-to-one groups."""
+    before, after = units(original), units(replacement)
+    matcher = SequenceMatcher(None, [x.casefold() for x in before], [x.casefold() for x in after], autojunk=False)
+    mapping = [None] * len(before)
+    old_cursor = new_cursor = 0
+    for block in matcher.get_matching_blocks():
+        old_count, new_count = block.a - old_cursor, block.b - new_cursor
+        if old_count or new_count:
+            if new_count < 1 or old_count < new_count:
+                raise ValueError('当前支持多个原唱字映射到一个新词；请勿增加或删除独立发音单位。')
+            for offset in range(old_count):
+                mapping[old_cursor + offset] = new_cursor + min(new_count - 1, offset * new_count // old_count)
+        for offset in range(block.size):
+            mapping[block.a + offset] = block.b + offset
+        old_cursor, new_cursor = block.a + block.size, block.b + block.size
+    if any(index is None for index in mapping):
+        raise ValueError('新歌词无法与原唱音符建立连续映射。')
+    for target_index in set(mapping):
+        if mapping.count(target_index) > 1 and not re.fullmatch(r"[A-Za-z]+(?:'[A-Za-z]+)*", after[target_index]):
+            raise ValueError('多个原唱字目前只能合并映射到一个英文单词。')
+    return mapping
+
+
+def changed_source_units(original, replacement):
+    before, after = units(original), units(replacement)
+    mapping = replacement_unit_map(original, replacement)
+    return [i for i, target_index in enumerate(mapping) if before[i].casefold() != after[target_index].casefold() or mapping.count(target_index) > 1]
+
+
+def potential_reference_changes(line):
+    """Conservatively include source syllables that a slot option may borrow."""
+    before, after = units(line['original']), units(line['text'])
+    mapping = replacement_unit_map(line['original'], line['text'])
+    changed = set(changed_source_units(line['original'], line['text']))
+    controls = {item['index']: item for item in (line.get('midi_slots') or [])} if line.get('mode') == 'score' else {}
+    for target, word in enumerate(after):
+        indices = [i for i, mapped in enumerate(mapping) if mapped == target]
+        control = controls.get(target, {})
+        if control.get('slots'):
+            changed.update(indices)
+        if len(indices) < 2 or control.get('gap_policy', 'auto') == 'keep':
+            continue
+        following = indices[-1] + 1
+        if following < len(before) and mapping[following] != target and not re.fullmatch(r"[A-Za-z]+(?:'[A-Za-z]+)*", after[mapping[following]]):
+            changed.add(following)
+    return sorted(changed)
+
+
 def validate_alignment(project, segment_ids):
     if not project.get('assets', {}).get('source'):
         raise ValueError('请先导入原唱干声。')
@@ -40,8 +89,8 @@ def validate_alignment(project, segment_ids):
 def validate_render(project, segment_ids):
     selected = validate_alignment(project, segment_ids)
     for line in selected:
-        if line.get('mode') != 'ying' and len(units(line['original'])) != len(units(line['text'])):
-            raise ValueError('首版需保持新词与原词的发音单位数一致（一个汉字或英文单词算一个单位）。')
+        if line.get('mode') != 'ying':
+            replacement_unit_map(line['original'], line['text'])
         if line.get('restore') and line.get('mode')!='score':
             raise ValueError('原句音色转换仅支持 MIDI 模式。')
     return selected
@@ -72,10 +121,10 @@ def choose_reference_phrase(lines, target):
 
 def prefer_masked_reference(line, alignment):
     """Use verified word spans to avoid analyzing an unnecessary reference phrase."""
-    if not alignment: return False
-    before, after = units(line['original']), units(line['text'])
-    if len(before) != len(after): return False
-    changed = [i for i,(a,b) in enumerate(zip(before,after)) if a.casefold()!=b.casefold()]
+    if not alignment or (line.get('mode') == 'score' and line.get('midi_note_edits')): return False
+    before = units(line['original'])
+    try: changed = potential_reference_changes(line)
+    except ValueError: return False
     unchanged = len(before)-len(changed)
     if not changed or unchanged < 2 or (len(changed)/len(before) > .6 and unchanged < 4): return False
     timings = alignment.get('unit_timings',[])
@@ -97,11 +146,20 @@ def fingerprint(project, line):
     values = {k: line.get(k) for k in ('id', 'original', 'text', 'start', 'end', 'mode', 'restore')}
     parameters = generation_params(line.get('mode'), line.get('generation_params'))
     if parameters != generation_params(line.get('mode')): values['generation_params'] = parameters
+    if line.get('mode') == 'score' and line.get('midi_slots'):
+        values['midi_slots'] = line['midi_slots']
+    if line.get('mode') == 'score' and line.get('midi_note_edits'):
+        values['midi_note_edits'] = line['midi_note_edits']
     for key in ('start', 'end'):
         values[key] = round(float(values[key]), 6)
     payload = {'source': project.get('assets', {}).get('source', {}).get('id'),
                'line': values,
                'pipeline': 'soulx-v1-aligned-rosvot-fp16-32'}
+    try:
+        mapped = replacement_unit_map(line['original'], line['text'])
+        if len(set(mapped)) < len(mapped): payload['english_grouping'] = 'controlled-slots-mask-v11'
+    except (KeyError, TypeError, ValueError):
+        pass
     if line.get('mode')=='score':payload['score_pitch_repair']=1
     if line.get('mode')=='ying':payload['pipeline']='yingmusic-plus-local-v1'
     from backend.timeline import cached_alignment

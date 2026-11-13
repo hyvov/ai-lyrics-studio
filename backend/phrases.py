@@ -29,6 +29,8 @@ def split_phrase(project, segment_id, position, at):
     first_text,second_text=split_text(line['text'],position)
     first={**line,'original':first_original,'text':first_text,'end':at}
     second={**line,'id':uuid4().hex,'original':second_original,'text':second_text,'start':at}
+    for item in (first, second):
+        item.pop('midi_slots', None); item.pop('midi_note_edits', None)
     project['lines'][index:index+1]=[first,second]
 
 
@@ -45,4 +47,5 @@ def merge_next(project, segment_id):
     merged={**first,'original':join(first['original'],second['original']),
             'text':join(first['text'],second['text']),'end':second['end'],
             'needs_review':bool(first.get('needs_review') or second.get('needs_review'))}
+    merged.pop('midi_slots', None); merged.pop('midi_note_edits', None)
     project['lines'][index:index+2]=[merged]

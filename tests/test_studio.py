@@ -25,6 +25,13 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
 
+    def test_desktop_ui_assets_do_not_reuse_cached_versions(self):
+        for path in ('/', '/index.html', '/studio.css', '/studio.js', '/wave-editor.js'):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers.get('cache-control'), 'no-store')
+
     def test_import_edit_restart_export_and_conflict(self):
         p = self.create()
         response = self.client.post(f"/api/projects/{p['id']}/lyrics", headers=self.auth,

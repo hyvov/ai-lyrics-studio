@@ -15,7 +15,8 @@ from backend.runtime import ROOT, Runtime
 from backend.media import source_issue
 from backend.singing import composition_fingerprint, fingerprint, svc_fingerprint, validate_render, validate_alignment, choose_reference_phrase, prefer_masked_reference
 from backend.timeline import alignment_fingerprint, cached_alignment, validate_timings
-from backend.store import Conflict,snapshot_lyrics
+from backend.store import Conflict,snapshot_lyrics,DEFAULT_MODE
+from backend.svc_options import svc_options
 
 TERMINAL = {'succeeded', 'failed', 'cancelled', 'interrupted', 'stale'}
 
@@ -69,7 +70,7 @@ class RenderJobs:
             svc_config=None
             if kind=='render' and any(line.get('restore') for line in selected):
                 svc_config=self.runtime.svc_config()
-                if not svc_config:raise ValueError('原句音色转换需要本地 SoulX Studio SVC 组件。')
+                if not svc_config:raise ValueError('原句音色转换需要词声 Studio 独立 SVC 组件。')
             job_id = uuid4().hex
             directory = self.root / job_id
             directory.mkdir()
@@ -129,7 +130,7 @@ class RenderJobs:
                 raise ValueError('歌曲短于现有歌词，请先调整歌词时间或新建工程。')
             separation = self.runtime.separation_config()
             if not separation:
-                raise ValueError('本地 SoulX Studio 分离组件或模型不完整，请先在原软件安装分离模型。')
+                raise ValueError('独立分离组件或模型不完整，请检查本项目运行时。')
             job_id = uuid4().hex
             directory = self.root / job_id
             directory.mkdir()
@@ -165,8 +166,9 @@ class RenderJobs:
             threading.Thread(target=self._run,args=(job,copy.deepcopy(p)),daemon=True).start()
             return copy.deepcopy(job)
 
-    def submit_svc(self, project_id, revision, target_kind):
+    def submit_svc(self, project_id, revision, target_kind, options=None):
         with self.lock:
+            options = svc_options(options)
             if self.active:raise Conflict('已有模型任务正在运行，请等待完成或取消。')
             p=self.store.get(project_id)
             if type(revision) is not int or revision!=p['revision']:raise Conflict('工程已更新，请刷新后再试。')
@@ -184,11 +186,11 @@ class RenderJobs:
             for asset_id in (ref['id'],target):
                 if not (self.assets/asset_id).is_file():raise ValueError('音频素材不存在。')
             svc=self.runtime.svc_config()
-            if not svc:raise ValueError('本地 SoulX Studio 音色转换组件或模型不完整。')
+            if not svc:raise ValueError('独立音色转换组件或模型不完整。')
             job_id=uuid4().hex;directory=self.root/job_id;directory.mkdir()
-            job=dict(id=job_id,kind='svc',project_id=project_id,segment_ids=[],target_kind=target_kind,status='running',stage='starting',error=None,warnings=[],created_at=time.time())
+            job=dict(id=job_id,kind='svc',project_id=project_id,segment_ids=[],target_kind=target_kind,options=options,status='running',stage='starting',error=None,warnings=[],created_at=time.time())
             self.jobs[job_id]=job;self.active=job_id;self._persist(job)
-            config={**svc,'reference':str((self.assets/ref['id']).resolve()),'target':str((self.assets/target).resolve()),'job_dir':str(directory.resolve())}
+            config={**svc,'reference':str((self.assets/ref['id']).resolve()),'target':str((self.assets/target).resolve()),'job_dir':str(directory.resolve()),'options':options}
             if p.get('assets',{}).get('accompaniment'):
                 config['accompaniment']=str((self.assets/p['assets']['accompaniment']['id']).resolve())
             (directory/'input.json').write_text(json.dumps(config,ensure_ascii=False),encoding='utf-8')
@@ -226,7 +228,7 @@ class RenderJobs:
         directory = self.root / job['id']
         error = None
         try:
-            env = {**os.environ, 'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1', 'HF_HUB_OFFLINE': '1', 'TRANSFORMERS_OFFLINE': '1', 'PYTHONDONTWRITEBYTECODE': '1'}
+            env = {**os.environ, 'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1', 'HF_HUB_OFFLINE': '1', 'TRANSFORMERS_OFFLINE': '1', 'PYTHONDONTWRITEBYTECODE': '1', 'NLTK_DATA': str(self.runtime.python.parent / 'nltk_data')}
             flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             with self.lock:
                 if job['status'] == 'cancelled':
@@ -314,6 +316,11 @@ class RenderJobs:
                 pending=current.get('assets',{}).pop('reference_pending',None)
                 if pending:current['assets']['reference']=pending
                 current['svc']={'asset_id':asset_id,'target_kind':target_kind,'fingerprint':svc_fingerprint(current,target_kind)}
+                current['svc']['options']=svc_options(job.get('options'))
+                result_file=directory/'svc-result.json'
+                if result_file.is_file():
+                    result=json.loads(result_file.read_text(encoding='utf-8'))
+                    if type(result.get('pitch_shift')) is int:current['svc']['pitch_shift']=result['pitch_shift']
                 old_backing=snapshot.get('assets',{}).get('accompaniment')
                 mix_path=directory/'svc-mixed.wav'
                 if old_backing and old_backing==current.get('assets',{}).get('accompaniment') and mix_path.is_file() and mix_path.stat().st_size>44:
@@ -333,7 +340,7 @@ class RenderJobs:
             current=self.store.get(snapshot['id'])
             if current.get('assets',{}).get('source') != snapshot.get('assets',{}).get('source') or current['lines'] != snapshot['lines']:
                 self._set(job,status='stale',error='识词期间原唱或歌词已改变，结果未覆盖当前工程。');return
-            lines=[dict(id=uuid4().hex,original=x['text'],text=x['text'],start=x['start'],end=x['end'],mode='melody',restore=False,needs_review=True) for x in drafts]
+            lines=[dict(id=uuid4().hex,original=x['text'],text=x['text'],start=x['start'],end=x['end'],mode=DEFAULT_MODE,restore=False,needs_review=True) for x in drafts]
             validate_project({**current,'lines':lines})
             snapshot_lyrics(current,'自动识词前')
             current['lines']=lines;current['revision']+=1;self.store._write(current)

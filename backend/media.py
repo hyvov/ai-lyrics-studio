@@ -36,7 +36,9 @@ def source_issue(project, assets):
 @lru_cache(maxsize=4)
 def _waveform(path: str, size: int, modified_ns: int):
     """Bounded-memory 5 ms peaks from FFmpeg's 8 kHz stereo PCM stream."""
-    ffmpeg=shutil.which('ffmpeg')
+    from backend.runtime import Runtime
+    bundled = Runtime.discover().python.parent / 'ffmpeg/bin/ffmpeg.exe'
+    ffmpeg = str(bundled) if bundled.is_file() else shutil.which('ffmpeg')
     if not ffmpeg:raise ValueError('无法解析波形：请安装 FFmpeg 并加入系统 PATH。')
     command=[ffmpeg,'-nostdin','-hide_banner','-v','error','-i',path,'-map','0:a:0','-t','1800',
              '-f','s16le','-acodec','pcm_s16le','-ac','2','-ar','8000','pipe:1']

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import copy
 from backend.generation_params import generation_params
+from backend.midi_slots import validate_midi_slots, validate_midi_note_edits
 import math
 import os
 import re
@@ -11,6 +12,8 @@ import threading
 import time
 from pathlib import Path
 from uuid import uuid4
+
+DEFAULT_MODE = 'score'
 
 
 class Conflict(Exception):
@@ -59,6 +62,10 @@ def validate_project(value: dict) -> dict:
         if line.get('mode') not in ('melody', 'score', 'ying') or not isinstance(line.get('restore'), bool):
             raise ValueError('生成参数无效。')
         generation_params(line['mode'], line.get('generation_params'))
+        if 'midi_slots' in line:
+            line['midi_slots'] = validate_midi_slots(line['midi_slots'], line['text'])
+        if 'midi_note_edits' in line:
+            line['midi_note_edits'] = validate_midi_note_edits(line['midi_note_edits'], line)
     return {'name': name, 'duration': duration, 'lines': lines}
 
 
@@ -96,6 +103,39 @@ class Store:
             project = validate_project(value)
             project.update(id=uuid4().hex, revision=1, assets={})
             return self._write(project)
+
+    def delete(self, project_id: str, assets_root: Path) -> dict:
+        """Delete a project and its unshared audio assets."""
+        asset_pattern = re.compile(r'^[a-f0-9]{32}\.(?:wav|mp3|flac|m4a|ogg|aac|opus|webm)$', re.I)
+
+        def asset_ids(value):
+            found = set()
+            if isinstance(value, dict):
+                for item in value.values():
+                    found.update(asset_ids(item))
+            elif isinstance(value, list):
+                for item in value:
+                    found.update(asset_ids(item))
+            elif isinstance(value, str) and asset_pattern.fullmatch(value):
+                found.add(value)
+            return found
+
+        with self.lock:
+            path = self._path(project_id)
+            project = json.loads(path.read_text(encoding='utf-8'))
+            owned = asset_ids(project)
+            shared = set()
+            for other_path in self.root.glob('*.json'):
+                if other_path == path:
+                    continue
+                try:
+                    shared.update(asset_ids(json.loads(other_path.read_text(encoding='utf-8'))))
+                except (OSError, ValueError):
+                    continue
+            path.unlink()
+            for asset_id in owned - shared:
+                (assets_root / asset_id).unlink(missing_ok=True)
+            return {'id': project_id, 'deleted': True}
 
     def update(self, project_id: str, value: dict) -> dict:
         with self.lock:
@@ -152,7 +192,7 @@ def parse_lrc(text: str, duration: float) -> list:
         end = cues[i + 1][0] if i + 1 < len(cues) else duration
         if start < 0 or start >= end or end > duration:
             raise ValueError('歌词时间重复或超出音频时长，请先导入音频并检查 LRC。')
-        result.append(dict(id=uuid4().hex, original=content, text=content, start=start, end=end, mode='melody', restore=False))
+        result.append(dict(id=uuid4().hex, original=content, text=content, start=start, end=end, mode=DEFAULT_MODE, restore=False))
     return result
 
 
@@ -204,7 +244,7 @@ def parse_srt(text: str, duration: float) -> list:
         content = ' '.join(line.strip() for line in html.unescape(content).splitlines() if line.strip())
         if not content or not content.replace('<SP>', '').strip():
             raise ValueError(f'第 {position} 条 SRT 字幕没有歌词文本。')
-        result.append(dict(id=uuid4().hex, original=content, text=content, start=a, end=b, mode='melody', restore=False))
+        result.append(dict(id=uuid4().hex, original=content, text=content, start=a, end=b, mode=DEFAULT_MODE, restore=False))
         previous_end = b
     return result
 

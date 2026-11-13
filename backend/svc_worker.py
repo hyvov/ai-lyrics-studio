@@ -19,6 +19,8 @@ def run(config, nested=False):
     import numpy as np
     import soundfile as sf
     import torch
+    from backend.svc_options import QUALITY_STEPS, svc_options
+    options=svc_options(config.get('options'))
     core=Path(config['core']);sys.path.insert(0,str(core));os.chdir(core)
     from backend.model_worker import adapt_llama,clear_gpu
     from preprocess.tools.f0_extraction import F0Extractor
@@ -51,12 +53,13 @@ def run(config, nested=False):
     report('svc_generate')
     if nested: torch.manual_seed(42)
     with torch.inference_mode():
-        generated,_=model.infer(prompt,target,pitch[0],pitch[1],n_steps=32,cfg=3. if nested else 1.,use_fp16=True,
+        generated,pitch_shift=model.infer(prompt,target,pitch[0],pitch[1],n_steps=QUALITY_STEPS[options['quality']],auto_shift=options['auto_shift'],cfg=3. if nested else 1.,use_fp16=True,
             progress_callback=lambda completed,total:report('svc_generate',position=completed,total=total))
     data=generated.squeeze().float().cpu().numpy()
     if data.ndim!=1 or not len(data) or not np.isfinite(data).all() or np.max(np.abs(data))<.0001:
         raise ValueError('转换结果为空或异常。')
     sf.write(directory/'svc.wav',data,int(cfg.audio.sample_rate),subtype='PCM_16')
+    (directory/'svc-result.json').write_text(json.dumps({'options':options,'pitch_shift':int(pitch_shift)},ensure_ascii=False),encoding='utf-8')
     if config.get('accompaniment'):
         import librosa
         report('svc_mix')

@@ -1,4 +1,4 @@
-"""Prepare our own code/dependencies; never install into the shared Studio runtime."""
+"""Prepare the independent runtime and inference dependencies."""
 import os
 from pathlib import Path
 import subprocess
@@ -28,7 +28,7 @@ def system_proxy():
 def main():
     runtime = Runtime.discover()
     if not runtime.python.is_file():
-        raise SystemExit('未找到 SoulX Studio Python，请设置 SOULX_STUDIO_HOME 或 SOULX_PYTHON。')
+        raise SystemExit('未找到独立 Python，请先运行 python scripts/import_local_runtime.py，或设置 AI_LYRICS_RUNTIME_HOME。')
     proxy = system_proxy()
     git = ['git'] + (['-c', 'http.proxy=' + proxy] if proxy else [])
     if not runtime.core.exists():
@@ -36,24 +36,24 @@ def main():
         subprocess.run(['git', '-C', str(runtime.core), 'checkout', '--detach', UPSTREAM_COMMIT], check=True)
     actual = subprocess.check_output(['git', '-C', str(runtime.core), 'rev-parse', 'HEAD'], text=True).strip()
     if actual != UPSTREAM_COMMIT:
-        raise SystemExit('上游代码版本不匹配；请指定独立的 SOULX_SOURCE_ROOT 后重新配置，现有代码未被覆盖。')
-    hfa_model = Path(os.environ.get('SOULX_HFA_MODEL', runtime.studio / 'runtime/components/hfa/versions/1.0.0/model'))
+        raise SystemExit('上游代码版本不匹配；请指定独立的 AI_LYRICS_SOURCE_ROOT 后重新配置，现有代码未被覆盖。')
+    hfa_model = Path(os.environ.get('AI_LYRICS_HFA_MODEL', runtime.studio / 'components/hfa/model'))
     if (hfa_model / 'model.onnx').is_file():
-        hfa_source = Path(os.environ.get('SOULX_HFA_SOURCE', ROOT / 'runtime/Vocal2Midi'))
+        hfa_source = Path(os.environ.get('AI_LYRICS_HFA_SOURCE', ROOT / 'runtime/Vocal2Midi'))
         if not hfa_source.exists():
             subprocess.run(git + ['clone', '--filter=blob:none', '--no-checkout', 'https://github.com/Xiantaidu/Vocal2Midi.git', str(hfa_source)], check=True)
             subprocess.run(['git', '-C', str(hfa_source), 'sparse-checkout', 'set', 'inference/HubertFA/tools'], check=True)
             subprocess.run(git + ['-C', str(hfa_source), 'checkout', '--detach', HFA_COMMIT], check=True)
         actual = subprocess.check_output(['git', '-C', str(hfa_source), 'rev-parse', 'HEAD'], text=True).strip()
         if actual != HFA_COMMIT:
-            raise SystemExit('歌声对齐代码版本不匹配，未覆盖现有代码；请指定独立的 SOULX_HFA_SOURCE。')
+            raise SystemExit('歌声对齐代码版本不匹配，未覆盖现有代码；请指定独立的 AI_LYRICS_HFA_SOURCE。')
     command = [sys.executable, '-m', 'pip', '--python', str(runtime.python), 'install', '--target', str(ROOT / 'runtime/worker-deps'),
                '--upgrade', '--no-deps', '-r', str(ROOT / 'requirements-worker.txt')]
     if proxy:
         command += ['--proxy', proxy]
     subprocess.run(command, check=True)
     runtime.require()
-    print('模型文件共用完成；权重未复制、未修改。')
+    print('独立运行时配置完成。')
 
 
 if __name__ == '__main__':

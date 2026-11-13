@@ -1,4 +1,4 @@
-"""Windows desktop shell for the existing local AI Lyrics Studio workspace."""
+"""Windows desktop shell for the existing local 词声 Studio workspace."""
 from __future__ import annotations
 
 import ctypes
@@ -12,7 +12,8 @@ import time
 from urllib.error import URLError
 from urllib.request import urlopen
 
-URL = 'http://127.0.0.1:18733'
+PORT = 18997
+URL = f'http://127.0.0.1:{PORT}'
 
 
 def workspace():
@@ -30,7 +31,7 @@ def is_studio():
     try:
         page = request('/').decode('utf-8')
         session = json.loads(request('/api/session'))
-        return '<title>AI Lyrics Studio</title>' in page and bool(session.get('token'))
+        return '<title>词声 Studio</title>' in page and bool(session.get('token'))
     except (OSError, ValueError, URLError):
         return False
 
@@ -52,11 +53,11 @@ def ensure_server(root):
     import socket
     with socket.socket() as probe:
         probe.settimeout(.5)
-        if probe.connect_ex(('127.0.0.1', 18733)) == 0:
-            raise RuntimeError('18733 端口已被其他程序占用，请关闭占用该端口的程序后重试。')
+        if probe.connect_ex(('127.0.0.1', PORT)) == 0:
+            raise RuntimeError('18997 端口已被其他程序占用，请关闭占用该端口的程序后重试。')
     if not (root / 'backend' / 'app.py').is_file():
         raise RuntimeError('找不到项目文件。请将客户端放在项目的 dist 文件夹内。')
-    process = subprocess.Popen([python_path(root), '-m', 'backend.app'], cwd=root,
+    process = subprocess.Popen([python_path(root), '-m', 'backend.app', '--port', str(PORT)], cwd=root,
                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + 25
@@ -90,7 +91,8 @@ def main():
     try:
         process = ensure_server(root)
         webview.settings['ALLOW_DOWNLOADS'] = True
-        webview.create_window('AI Lyrics Studio', URL, width=1500, height=950,
+        # Force a fresh document on launch even with a persistent WebView profile.
+        webview.create_window('词声 Studio', f'{URL}/?launch={time.time_ns()}', width=1500, height=950,
                               min_size=(960, 680), background_color='#fcf7f1', text_select=True)
         webview.start(gui='edgechromium', private_mode=False,
                       storage_path=str(root / 'data' / 'desktop-webview'))
@@ -102,5 +104,5 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as exc:
-        ctypes.windll.user32.MessageBoxW(None, str(exc), 'AI Lyrics Studio 启动失败', 0x10)
+        ctypes.windll.user32.MessageBoxW(None, str(exc), '词声 Studio 启动失败', 0x10)
         raise SystemExit(1)

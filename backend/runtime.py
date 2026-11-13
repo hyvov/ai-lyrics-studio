@@ -1,6 +1,5 @@
-"""Locate shared, read-only model weights and an independent upstream checkout."""
+"""Locate AI Lyrics Studio’s own runtime and model weights."""
 from __future__ import annotations
-import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,23 +17,15 @@ class Runtime:
 
     @classmethod
     def discover(cls):
-        studio = Path(os.environ.get('SOULX_STUDIO_HOME', Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData/Local')) / 'SoulX Studio')).resolve()
-        try:
-            version = json.loads((studio / 'runtime/current.json').read_text(encoding='utf-8-sig'))['version']
-        except (OSError, ValueError, KeyError):
-            version = ''
-        # Version names must remain within the installed runtime directory.
-        if not version or Path(version).name != version or '/' in version or '\\' in version:
-            version = '_missing_'
-        installed = studio / 'runtime/versions' / version
-        return cls(studio, Path(os.environ.get('SOULX_PYTHON', installed / 'python/python.exe')).resolve(),
-                   Path(os.environ.get('SOULX_SOURCE_ROOT', ROOT / 'runtime/SoulX-Singer')).resolve(),
-                   Path(os.environ.get('SOULX_MODELS_ROOT', installed / 'core/pretrained_models')).resolve())
+        home = Path(os.environ.get('AI_LYRICS_RUNTIME_HOME', ROOT / 'runtime/independent')).resolve()
+        return cls(home, Path(os.environ.get('AI_LYRICS_PYTHON', home / 'python/python.exe')).resolve(),
+                   Path(os.environ.get('AI_LYRICS_SOURCE_ROOT', ROOT / 'runtime/SoulX-Singer')).resolve(),
+                   Path(os.environ.get('AI_LYRICS_MODELS_ROOT', home / 'pretrained_models')).resolve())
 
     def hfa_config(self):
-        model = Path(os.environ.get('SOULX_HFA_MODEL', self.studio / 'runtime/components/hfa/versions/1.0.0/model')).resolve()
-        python = Path(os.environ.get('SOULX_HFA_PYTHON', model.parent / 'python')).resolve()
-        source = Path(os.environ.get('SOULX_HFA_SOURCE', ROOT / 'runtime/Vocal2Midi')).resolve()
+        model = Path(os.environ.get('AI_LYRICS_HFA_MODEL', self.studio / 'components/hfa/model')).resolve()
+        python = Path(os.environ.get('AI_LYRICS_HFA_PYTHON', model.parent / 'python')).resolve()
+        source = Path(os.environ.get('AI_LYRICS_HFA_SOURCE', ROOT / 'runtime/Vocal2Midi')).resolve()
         required = [model / 'model.onnx', model / 'vocab.json', model / 'config.json', model / 'VERSION',
                     source / 'inference/HubertFA/tools/decoder.py', python / 'onnxruntime/__init__.py', python / 'pypinyin/__init__.py']
         if not all(p.is_file() for p in required):
@@ -42,7 +33,7 @@ class Runtime:
         return {'model': str(model), 'python': str(python), 'source': str(source)}
 
     def separation_config(self):
-        root = self.studio / 'data/music'
+        root = self.studio / 'music'
         files = [root / 'deps/pymss/__init__.py', root / 'deps/pymss_core/__init__.py',
                  root / 'models/vocal/vocal_extraction/Kim_MelBandRoformer.ckpt',
                  root / 'models/vocal/vocal_extraction/Kim_MelBandRoformer.yaml',
@@ -58,21 +49,15 @@ class Runtime:
         return {'model': str(model)} if self.python.is_file() and all(x.is_file() for x in required) else None
 
     def ying_config(self):
-        root = Path(os.environ.get('AI_LYRICS_YING_ROOT', ROOT.parent / 'YingMusic-Singer-Plus-main')).resolve()
+        root = Path(os.environ.get('AI_LYRICS_YING_ROOT', self.studio / 'ying')).resolve()
         python = root / '.venv/Scripts/python.exe'
         required = [python, root/'model.safetensors', root/'config.json', root/'local_runtime.py',
                     root/'src/YingMusicSinger/infer/YingMusicSinger.py']
         return {'root':str(root),'python':str(python)} if all(path.is_file() for path in required) else None
 
     def svc_config(self):
-        try:
-            version = json.loads((self.studio / 'runtime/components/svc/current.json').read_text(encoding='utf-8-sig'))['version']
-        except (OSError, ValueError, KeyError):
-            return None
-        if not isinstance(version,str) or not version or Path(version).name != version or '/' in version or '\\' in version:
-            return None
-        root=self.studio/'runtime/components/svc/versions'/version/'pretrained_models'
-        wrapper=self.studio/'backend/soulx_svc_model.py'
+        root = self.studio / 'components/svc/pretrained_models'
+        wrapper = self.studio / 'components/svc/soulx_svc_model.py'
         required=[root/'SoulX-Singer/model-svc.pt',root/'whisper-base/config.json',root/'whisper-base/model.safetensors',wrapper,self.python]
         if not all(x.is_file() for x in required): return None
         return {'svc_root':str(root),'svc_wrapper':str(wrapper),'core':str(self.core),'models':str(self.models)}
@@ -91,7 +76,7 @@ class Runtime:
         checks = {name: path.is_file() for name, path in files.items()}
         return {'ready': all(checks.values()), 'checks': checks, 'model_root': str(self.models),
                 'python': str(self.python), 'source_root': str(self.core), 'source_revision': UPSTREAM_COMMIT, 'singing_aligner': bool(self.hfa_config()),
-                'limits': '每句 0.12–20 秒；中英歌词；新旧发音单位数量相同；请导入干声。'}
+                'limits': '每句 0.12–20 秒；支持中英歌词；多个原唱字可映射到一个英文词；请导入干声。'}
 
     def require(self):
         status = self.status()

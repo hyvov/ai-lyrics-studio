@@ -1,4 +1,4 @@
-"""Singing-specific acoustic alignment using shared HFA ONNX weights.
+"""Singing-specific acoustic alignment using local HFA ONNX weights.
 
 Decoder/G2P come from an independent Apache-2.0 Vocal2Midi checkout, not Studio.
 """

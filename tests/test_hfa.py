@@ -26,7 +26,7 @@ class HfaTests(unittest.TestCase):
     def test_optional_shared_component_discovery(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);model=root/'model';python=root/'python';source=root/'source'
-            env={'SOULX_HFA_MODEL':str(model),'SOULX_HFA_PYTHON':str(python),'SOULX_HFA_SOURCE':str(source)}
+            env={'AI_LYRICS_HFA_MODEL':str(model),'AI_LYRICS_HFA_PYTHON':str(python),'AI_LYRICS_HFA_SOURCE':str(source)}
             runtime=Runtime(root,root/'python.exe',root/'core',root/'models')
             with patch.dict(os.environ,env):
                 self.assertIsNone(runtime.hfa_config())

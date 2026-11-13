@@ -1,6 +1,6 @@
-# AI Lyrics Studio
+# 词声 Studio
 
-参照 SoulX Studio 操作布局开发的本地 AI 唱歌改词工具。模型权重共用本机 SoulX Studio 安装目录，不重复下载或复制。
+参照 SoulX Studio 操作布局开发的本地 AI 唱歌改词工具。模型和 GPU 运行环境保存在本项目独立目录，不与 SoulX Studio 共用。
 
 ## 当前可用
 
@@ -17,7 +17,7 @@
 - 原唱/改词切换试听，导出改词演唱 WAV、带伴奏混音 WAV、SRT 字幕和 LRC。
 - 检查生成结果的输入版本，旧任务不会覆盖后来修改的歌词。
 
-波形支持整句与逐字边界拖拽、相邻句/字联动、文字块平移、缩放、视窗平移、撤销/重做和数值微调。暂未接入 MV、非等长歌词适配。
+波形支持整句与逐字边界拖拽、相邻句/字联动、文字块平移、缩放、视窗平移、撤销/重做和数值微调。MV 暂缓；非等长改词目前仅支持多个原唱单位映射到一个英文单词，发音和时值仍需试听。
 
 ## 启动
 
@@ -26,6 +26,7 @@
 ```powershell
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe scripts/import_local_runtime.py
 .venv\Scripts\python.exe scripts/setup_runtime.py
 .venv\Scripts\python.exe -m backend.app
 ```
@@ -34,24 +35,24 @@ python -m venv .venv
 
 `setup_runtime.py` 只获取固定版本的官方推理代码和少量兼容依赖，保存于本项目的 `runtime/`。它不会下载模型或向 SoulX Studio 文件夹安装软件。它会读取已有的 Windows 系统代理用于下载，不改变系统代理设置。
 
-默认从 `%LOCALAPPDATA%\SoulX Studio\runtime\current.json` 发现运行时，共用其 Python、模型与预处理权重。SVC 工作进程从本机安装目录加载优化后的 `soulx_svc_model.py`，不修改安装文件。
+首次运行 `scripts/import_local_runtime.py` 会从本机 SoulX Studio 复制模型、Python、SVC、识词及分离组件到 `runtime/independent/`，并校验大型权重；不会删除或修改原软件和工程，两个项目的模型文件此后互不影响。约需 19 GiB。目标已存在时脚本不会覆盖；需要迁移其他安装目录时可传 `--source`。`runtime/` 不纳入 Git 仓库，不要将权重推送到 GitHub。
 
 可在启动前配置：
 
 | 环境变量 | 用途 |
 | --- | --- |
-| `SOULX_STUDIO_HOME` | SoulX Studio 安装目录 |
-| `SOULX_PYTHON` | 共用的 GPU Python 解释器路径 |
-| `SOULX_MODELS_ROOT` | 共用的 pretrained_models 目录 |
-| `SOULX_SOURCE_ROOT` | 独立的上游推理代码目录 |
-| `SOULX_HFA_MODEL` | 可选 HubertFA 共享模型目录，默认 Studio 的 hfa 组件 model 目录 |
-| `SOULX_HFA_PYTHON` | HFA 组件的只读 Python 补充依赖目录 |
-| `SOULX_HFA_SOURCE` | 独立的 Vocal2Midi 对齐解码器代码目录 |
+| `AI_LYRICS_RUNTIME_HOME` | 独立运行时目录，默认 `runtime/independent` |
+| `AI_LYRICS_PYTHON` | 独立 GPU Python 解释器 |
+| `AI_LYRICS_MODELS_ROOT` | 独立 pretrained_models 目录 |
+| `AI_LYRICS_SOURCE_ROOT` | 上游推理代码目录 |
+| `AI_LYRICS_HFA_MODEL` | HubertFA 模型目录 |
+| `AI_LYRICS_HFA_PYTHON` | HubertFA Python 补充依赖目录 |
+| `AI_LYRICS_HFA_SOURCE` | Vocal2Midi 对齐解码器目录 |
 | `AI_LYRICS_DATA` | 本工具数据目录，默认 `data/` |
 
 ## 使用顺序
 
-1. 创建工程，点击“导入歌曲并分离”，或直接导入清晰干声；如需混音，先导入从同一时间起点开始的伴奏。自动分离使用 SoulX Studio 本机已有的 Kim MelBand-Roformer 和去混响模型，失败或取消不会覆盖现有音轨。
+1. 创建工程，点击“导入歌曲并分离”，或直接导入清晰干声；如需混音，先导入从同一时间起点开始的伴奏。自动分离使用本项目的 Kim MelBand-Roformer 和去混响模型，失败或取消不会覆盖现有音轨。
 2. 点击“导入 SRT / LRC”并检查原词，或点击“自动识词”生成草稿并逐句校对原词和边界。自动识词有可能漏字、错字或分句不准确，校对后在歌词时间轴中保存原词；已有歌词只有在确认替换后才会覆盖。SRT 直接保留每条字幕的毫秒起止时间与句间空隙；多行文字合为一句。模型会在生成前逐字对齐。
 3. 点击“改词”，修改歌词与边界，选择旋律或 MIDI，然后“生成当前句”。
 4. 也可先保存多句，再点击底部“生成 N 句”。后台一次运行一个 GPU 任务。
@@ -62,7 +63,7 @@ python -m venv .venv
 
 - 工程最长 30 分钟，单句 0.12–20 秒，每次最多 100 句；不足 1 秒的唱句可能不稳定，需重点试听。
 - 支持中文汉字、英文单词和常用标点；数字请写成文字。
-- 新旧歌词须保持相同发音单位数：一个汉字或一个英文单词算一个单位；停顿沿用原句，不按纯字符数判断英文。
+- 一个汉字或英文单词算一个发音单位；多个原唱单位可以映射到一个英文词，其他增加或删除单位的情况暂不支持。
 - 已提取的逐字时间会在主界面用于实际定位与高亮；缺少时间时才按单位数估算。可以在“歌词时间轴”先提取，不必生成音频。
 - 少量对齐后时长为零的快速音节会按邻近边界估算，并提示试听校对；大量异常会直接报错。
 - 输出为 24 kHz、单声道 PCM WAV。混音按现有时间起点叠加并在必要时整体缩小峰值，不自动修复素材偏移。
@@ -107,7 +108,7 @@ SRT/LRC 导入支持 UTF-8、带 BOM 的 UTF-16 和常见 GBK/GB18030 编码，�
 
 优先使用本机 Studio HFA 组件中的 HubertFA ONNX 歌声对齐模型，独立解码器代码固定为 Vocal2Midi 的 `e46590b490fca790e6cd2dacbc0bb7779babe383`。组件不存在或结果未通过校验时，尝试原有 Qwen 对齐。两种方式都检查每个字/词及时间边界，不用均匀分配时间掩盖失败。模型状态中显示歌声对齐组件是否就绪。
 
-实际失败的 3.7 秒、13 字唱句已用共享 HFA 权重复测，通过完整演唱与混音导出。源歌词或边界在任务期间被修改时仍不会被旧结果覆盖。每个任务保留原始对齐诊断文件，便于复核。
+实际失败的 3.7 秒、13 字唱句已用HFA 权重复测，通过完整演唱与混音导出。源歌词或边界在任务期间被修改时仍不会被旧结果覆盖。每个任务保留原始对齐诊断文件，便于复核。
 
 
 ## 时间轴优化参考
@@ -116,15 +117,15 @@ SRT/LRC 导入支持 UTF-8、带 BOM 的 UTF-16 和常见 GBK/GB18030 编码，�
 
 ## Windows 客户端
 
-在本机双击 `dist/AI Lyrics Studio.exe`，打开独立窗口。客户端使用系统 WebView2 显示界面，仍通过本机回环地址连接 Python 服务，工程和模型沿用本项目与 SoulX Studio 的现有位置。首次打开时如服务未运行，客户端会尝试启动它；已有服务会被复用。关闭客户端时，若它启动的服务仍有模型任务，服务将继续运行以保护任务。
+在本机双击 `dist/词声 Studio.exe`，打开独立窗口。客户端使用系统 WebView2 显示界面，仍通过本机回环地址连接 Python 服务，工程和模型保存在本项目的位置。首次打开时如服务未运行，客户端会尝试启动它；已有服务会被复用。关闭客户端时，若它启动的服务仍有模型任务，服务将继续运行以保护任务。
 
-当前客户端是此工作区的本机启动器，不是可复制到其他电脑独立运行的安装包：请保留 EXE 在项目的 `dist/` 内，并保留项目代码、Python 依赖、`runtime/`、`data/` 和共享的 SoulX Studio 运行环境。需要 Microsoft Edge WebView2 Runtime。
+当前客户端是此工作区的本机启动器，不是可复制到其他电脑独立运行的安装包：请保留 EXE 在项目的 `dist/` 内，并保留项目代码、Python 依赖、`runtime/`、`data/` 以及独立模型运行环境。需要 Microsoft Edge WebView2 Runtime。
 
 重建客户端：
 
 ```powershell
 python -m pip install -r requirements-desktop.txt
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name "AI Lyrics Studio" desktop/launcher.py
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name "词声 Studio" desktop/launcher.py
 ```
 
 ### YingMusic 唱句模式（本机实验功能）
@@ -136,5 +137,9 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name "AI Lyrics
 ### 唱句生成参数
 
 在“改词”弹窗展开“生成参数”。旋律和 MIDI 模式可设置采样步数、引导强度（CFG）和种子；YingMusic 另可设置采样时间偏移与参考末尾静音。参数按句保存，修改后该句需要重新生成，其他句的结果不受影响。默认值与此前版本一致；种子 `-1` 表示随机，实际种子可在歌词时间轴的“历史演唱”中查看。步数增加会增加计算时间，不保证效果必然更好，建议固定种子逐项试听对比。
+
+新导入的 SRT/LRC 与自动识词草稿默认使用 MIDI 模式；已有唱句的模式保持原设置。MIDI 编辑区可为英文词填写音素槽位（例如 `R-EH1 | S | T`），选择是否借用后续空档。句子已有一次分析结果时，还可调整实际音符边界和 MIDI 音高；设置随唱句保存，原词、素材或分析发生变化时需要重新检查。参考人声会遮盖实际被改词或借用的原唱音符。
+
+英文音素处理由仓库中的 `backend/soulx_processor.py` 提供；重新配置固定版本的上游运行时无需修改其源码。SVC 窗口支持选择原唱轨或改词轨、快速/标准/精细三档（16/32/64 步），以及可选的参考音域自动匹配。
 
 MIDI 音符缺少有效音高时，优先用对应位置可靠的原唱 F0 估算；该位置没有足够浊音帧时才参考邻近音符。现有有效音符不自动平滑或修改，结果仍需试听。
