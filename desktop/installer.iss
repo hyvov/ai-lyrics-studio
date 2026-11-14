@@ -1,4 +1,4 @@
-#define AppVersion "0.2.1"
+#define AppVersion "0.2.2"
 #define AppName "词声 Studio"
 #ifndef Payload
   #define Payload "..\build\release"

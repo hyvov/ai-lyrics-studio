@@ -157,26 +157,26 @@ function render() {
   const pending = p?.lines.filter(x => changed(x) && x.render_state !== 'ready').length || 0;
   const unaligned = p?.lines.filter(x => x.alignment_state !== 'ready').length || 0;
   $('batchAlign').textContent = '提取未对齐歌词 ' + unaligned + ' 句';
-  $('batchAlign').disabled = !unaligned || !!activeJob || !modelReady || !p?.assets.source || !!p?.source_issue;
+  $('batchAlign').disabled = !p || !!activeJob || (modelReady && (!unaligned || !p.assets.source || !!p.source_issue));
   $('batchAlign').title = p?.source_issue || '批量提取未对齐的逐字时间；已有时间不会被覆盖';
-  $('transcribe').disabled = !p?.assets.source || !!activeJob || !!p?.source_issue || !transcriptionReady;
+  $('transcribe').disabled = !p || !!activeJob || (transcriptionReady && (!p.assets.source || !!p.source_issue));
   $('transcribe').title = !transcriptionReady ? '歌词识别组件未安装，可先导入 SRT 或 LRC。' : '';
   $('lyricHistory').disabled = !p || !!activeJob;
-  $('batch').textContent = '生成待处理 ' + pending + ' 句'; $('batch').disabled = !pending || !!activeJob || !modelReady || !!p?.source_issue;
+  $('batch').textContent = '生成待处理 ' + pending + ' 句'; $('batch').disabled = !p || !!activeJob || (modelReady && (!pending || !!p.source_issue));
   $('batch').title = p?.source_issue || '仅生成待处理的改词，已生成的唱句直接复用；可在单句编辑中手动重新生成。';
   $('versionRendered').disabled = !p?.rendered_available;
   $('versionSvc').disabled = !p;
   $('versionSvc').title = p?.svc_available ? '试听 SVC 音色转换结果' : '尚无转换结果，点击设置音色转换';
   $('exportSvc').disabled = !p?.svc_available;
   $('exportSvcMix').disabled = !p?.svc_mixed_available;
-  $('startSvc').disabled = !p?.assets.source || !!activeJob || !!p?.source_issue;
+  $('startSvc').disabled = !p || !!activeJob || (svcReady && (!p.assets.source || !!p.source_issue));
   $('recompose').disabled = !p?.assets.source || !!activeJob || !p?.lines.some(x=>x.render_state==='ready');
   $('recompose').textContent = p?.assets.accompaniment ? '重新混音' : '重新合成';
   $('recompose').title = '复用已生成的唱句重新合成人声和伴奏，无需重新运行演唱模型';
   $('exportVoice').disabled = $('exportMix').disabled = !p?.rendered_available || !p?.render_complete;
   if (!p?.assets.accompaniment) $('exportMix').disabled = true;
   ['importSource', 'importAccompaniment', 'importLyrics', 'exportLyrics'].forEach(id => $(id).disabled = !p);
-  $('importSong').disabled = !p || !separationReady;
+  $('importSong').disabled = !p || !!activeJob;
   $('importSong').title = !separationReady ? '人声分离组件未安装，可先导入原唱干声和伴奏。' : '';
   $('seek').max = duration(); updateClock(+$('seek').value,true);
 }
@@ -365,7 +365,7 @@ function refreshTimelineBoundary() {
   $('timelineResetBoundary').disabled=!timelineBoundaryDirty||busy||!!activeJob;
   $('saveOriginal').disabled=timelineBoundaryDirty||!!activeJob;
   $('saveWordTimes').disabled=timelineBoundaryDirty||!(line.unit_timings||[]).length||!!activeJob;
-  $('extractWords').disabled=timelineBoundaryDirty||!!activeJob||!modelReady||!!p.source_issue;
+  $('extractWords').disabled=timelineBoundaryDirty||!!activeJob||(modelReady&&!!p.source_issue);
   $('extractWordsEmpty').disabled=$('extractWords').disabled;
   $('openPhraseEditor').disabled=timelineBoundaryDirty||!!activeJob;
   $('splitPhrase').disabled=timelineBoundaryDirty||!!activeJob||lyricUnits(line.original).length<2;
@@ -385,7 +385,7 @@ function ensureTimelinePhraseWave() {
     $('saveOriginal').disabled=timelineBoundaryDirty||!!activeJob;
     $('saveWordTimes').disabled=timelineBoundaryDirty||!(line.unit_timings||[]).length||!!activeJob;
     const p=project();
-    $('extractWords').disabled=timelineBoundaryDirty||!!activeJob||!modelReady||!!p.source_issue;
+    $('extractWords').disabled=timelineBoundaryDirty||!!activeJob||(modelReady&&!!p.source_issue);
   $('extractWordsEmpty').disabled=$('extractWords').disabled;
     $('openPhraseEditor').disabled=timelineBoundaryDirty||!!activeJob;
     $('splitPhrase').disabled=timelineBoundaryDirty||!!activeJob||lyricUnits(line.original).length<2;
@@ -504,7 +504,7 @@ function openEdit(i) {
   $('midiNotesStatus').textContent = '正在读取最近一次 MIDI 音符分析…';
   for (const id of ['start', 'end', 'startRange', 'endRange']) { $(id).max = duration(); $(id).value = id.startsWith('start') ? line.start : line.end; }
   $('restore').checked = !!line.restore;
-  $('regenerate').disabled = !!activeJob || !modelReady || !!project()?.source_issue;
+  $('regenerate').disabled = !!activeJob || (modelReady && !!project()?.source_issue);
   $('regenerate').title = project()?.source_issue || '';
   document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('chosen', b.dataset.mode === line.mode));
   parameterDrafts = {[line.mode]:{...(line.generation_params || {})}};
@@ -670,6 +670,7 @@ document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
   syncRestore();validate();
 });
 $('regenerate').onclick = () => {
+  if (!modelReady) { openModelSetup('singer'); return; }
   if (!validate()) return;
   mutate(async () => {
     const line = project().lines[selected];
@@ -678,12 +679,12 @@ $('regenerate').onclick = () => {
     await startRender([line.id]);
   });
 };
-$('batch').onclick = () => mutate(async () => {
+$('batch').onclick = () => { if (!modelReady) { openModelSetup('singer'); return; } return mutate(async () => {
   const p=project(), pending=p.lines.filter(x=>changed(x)&&x.render_state!=='ready');
   const groups=[pending.filter(x=>x.mode!=='ying'),pending.filter(x=>x.mode==='ying')].filter(x=>x.length);
   batchProjectId=p.id; batchQueue=groups.slice(1).map(group=>group.map(x=>x.id));
   try { await startRender(groups[0].map(x=>x.id),p); } catch(error) { batchQueue=[];batchProjectId=null;throw error; }
-});
+}); };
 $('recompose').onclick=()=>mutate(()=>startCompose());
 async function startCompose() {
   const p=project();
@@ -691,6 +692,7 @@ async function startCompose() {
   render();pollJob();
 }
 $('batchAlign').onclick = async () => {
+  if (!modelReady) { openModelSetup('singer'); return; }
   const p=project(), lines=p.lines.filter(x=>x.alignment_state!=='ready').slice(0,100);
   if(!lines.length)return;
   const invalid=lines.find(x=>x.end-x.start<.12-1e-9 || x.end-x.start>20);
@@ -704,6 +706,7 @@ $('batchAlign').onclick = async () => {
   });
 };
 $('transcribe').onclick = async () => {
+  if (!transcriptionReady) { openModelSetup('transcription'); return; }
   const p=project();if(!p?.assets.source)return;
   if(p.lines.length&&!await askConfirm('自动识词','自动识词将替换当前歌词；原有内容会保存在历史歌词中。是否继续？','继续识词'))return;
   mutate(async()=>{
@@ -787,6 +790,7 @@ $('confirmCreate').onclick = () => {
 $('projectSelect').onchange = e => switchProject(+e.target.value);
 function chooseAudio(kind) { if (busy || !project()) return; importKind = kind; $('audioFile').value = ''; $('audioFile').click(); }
 $('importSong').onclick = async () => {
+  if (!separationReady) { openModelSetup('separation'); return; }
   if(activeJob){toast('当前模型任务尚未完成。');return;}
   if(project()?.assets.source && !await askConfirm('导入并分离歌曲','分离成功后会替换当前人声与伴奏，相关歌词对齐和生成结果需要重新处理。是否继续？','继续导入'))return;
   chooseAudio('song');
@@ -802,6 +806,7 @@ function syncSvcDialog() {
   $('svcStartConvert').disabled=!p || p.id!==svcDraftProjectId || !svcReady || !!activeJob || busy || !(svcDraftFile || reference) || !target || target==='rendered'&&!p.rendered_available;
 }
 $('startSvc').onclick = () => {
+  if (!svcReady) { openModelSetup('svc'); return; }
   const p=project();if(!p || busy)return;
   if(activeJob){toast('当前模型任务尚未完成。');return;}
   svcDraftProjectId=p.id;svcDraftFile=null;svcDraftDuration=null;
@@ -969,7 +974,7 @@ function renderTimeline() {
   $('saveWordTimes').hidden=timings.length===0;
   $('timelineHint').textContent=timings.length ? '已保存逐字时间 · '+({manual:'手动校正',HubertFA:'歌声对齐',Qwen:'自动对齐'}[line.alignment_engine]||'已对齐')+' · 手动保存会使旧生成过期。' : '还没有真实逐字时间，请提取；主界面暂按单位数估算定位。';
   if(line.needs_review) $('timelineHint').textContent='自动识词草稿，请校对原词和整句边界，确认后点击保存原词校正。'+$('timelineHint').textContent;
-  $('extractWords').disabled=!!activeJob||!modelReady||!!p.source_issue;
+  $('extractWords').disabled=!!activeJob||(modelReady&&!!p.source_issue);
   $('extractWords').title=p.source_issue||'';
   $('cancelAlignment').hidden=!activeJob || activeJob.kind!=='align';
   $('wordTimeline').replaceChildren();
@@ -1037,6 +1042,7 @@ $('saveOriginal').onclick=async()=>{
   });
 };
 $('extractWords').onclick=async()=>{
+  if (!modelReady) { openModelSetup('singer'); return; }
   const p=project(),line=p.lines[timelineSelected];
   if($('timelineOriginal').value.trim()!==line.original){toast('请先保存原词校正，再提取时间。');return;}
   if(timelineHasChanges()&&!await askConfirm('重新提取时间','重新提取会替换尚未保存的逐字时间，是否继续？','继续提取'))return;
@@ -1219,6 +1225,15 @@ async function refreshRuntimeDetails() {
     for(const [label,value] of [['使用范围',state.limits],['模型目录',state.model_root],['推理程序',state.source_root]]) {const row=document.createElement('div');row.className='runtime-path';const name=document.createElement('strong');name.textContent=label;const content=document.createElement('span');content.textContent=value||'—';row.append(name,content);diagnostics.append(row);}
     modelReady=!!state.ready; svcReady=!!state.svc_ready; transcriptionReady=!!state.transcription_ready; separationReady=!!state.separation_ready;
     render();
+}
+async function openModelSetup(component) {
+  try {
+    await refreshRuntimeDetails();
+    document.querySelectorAll('input[name=setupComponent]').forEach(input=>{input.checked=input.value===component;});
+    if (!$('runtimeDialog').open) $('runtimeDialog').showModal();
+    await refreshModelSetup();
+    if ($('setupMessage').textContent === '歌声核心模型尚未校验。') $('setupMessage').textContent='该功能需要安装相关组件，请选择下载或稍后再说。';
+  } catch(error) { toast('无法打开组件管理：'+error.message); }
 }
 $('runtimeInfo').onclick = async () => {
   try {
