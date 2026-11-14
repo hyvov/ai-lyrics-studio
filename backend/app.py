@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.store import Conflict, Store, export_lrc, export_srt, parse_lyrics,snapshot_lyrics,validate_project
 from backend.jobs import RenderJobs
+from backend.model_setup import ModelSetup
 from backend.media import source_issue,waveform
 from backend.singing import fingerprint, composition_fingerprint, svc_fingerprint, units
 from backend.timeline import alignment_fingerprint, cached_alignment, validate_timings
@@ -33,6 +34,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     assets.mkdir(parents=True, exist_ok=True)
     token = secrets.token_urlsafe(32)
     jobs = RenderJobs(store, assets, data / 'jobs')
+    model_setup = ModelSetup(jobs.runtime.models, jobs.runtime.component_home / 'svc/pretrained_models', jobs.runtime.music_models, runtime=jobs.runtime)
     @asynccontextmanager
     async def lifespan(_):
         yield
@@ -78,6 +80,10 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             supplied = request.headers.get('x-studio-token', '')
             if not secrets.compare_digest(supplied, token):
                 return JSONResponse({'error': '会话已失效，请刷新页面。'}, 403)
+            if (request.method == 'POST' and request.url.path.startswith('/api/projects/')
+                    and request.url.path.rsplit('/', 1)[-1] in ('renders', 'alignments', 'separation', 'transcription', 'svc', 'compose')
+                    and model_setup.snapshot()['status'] == 'running'):
+                return JSONResponse({'error': '正在安装或校验组件，请完成或暂停下载后再运行模型任务。'}, 409)
         response = await call_next(request)
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Referrer-Policy'] = 'same-origin'
@@ -112,9 +118,27 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             raise ValueError('请求须为 JSON 对象。')
         return value
 
+    @app.get('/api/model-setup')
+    def model_setup_state():
+        return model_setup.snapshot()
+
+    @app.post('/api/model-setup', status_code=202)
+    async def start_model_setup(request: Request):
+        value = await body(request)
+        with jobs.lock:
+            if jobs.active:
+                raise Conflict('当前有模型任务，请等待完成后再准备模型。')
+            model_setup.start(value.get('components'))
+            return model_setup.snapshot()
+
+    @app.post('/api/model-setup/cancel')
+    def cancel_model_setup():
+        model_setup.cancel()
+        return model_setup.snapshot()
+
     @app.get('/api/session')
     def session():
-        return {'token': token, 'capabilities': {'storage': True, 'inference': jobs.runtime.status()['ready']}}
+        return {'token': token, 'installation': str(ROOT), 'data_root': str(data.resolve()), 'capabilities': {'storage': True, 'inference': jobs.runtime.status()['ready']}}
 
     @app.get('/api/projects')
     def projects():
@@ -222,7 +246,8 @@ def create_app(data_root: Path | None = None) -> FastAPI:
         with jobs.lock:
             active = jobs.get(jobs.active) if jobs.active else None
         return {**jobs.runtime.status(), 'separation_ready': bool(jobs.runtime.separation_config()),
-                'transcription_ready': bool(jobs.runtime.transcription_config()), 'svc_ready':bool(jobs.runtime.svc_config()), 'ying_ready':bool(jobs.runtime.ying_config()), 'active_job': active}
+                'transcription_ready': bool(jobs.runtime.transcription_config()), 'svc_ready':bool(jobs.runtime.svc_config()), 'ying_ready':bool(jobs.runtime.ying_config()), 'active_job': active,
+                'active_model_setup': model_setup.snapshot()['status'] == 'running'}
 
     @app.get('/api/projects/{project_id}')
     def get_project(project_id: str):

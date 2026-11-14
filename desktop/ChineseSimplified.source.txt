@@ -1,0 +1,1 @@
+https://raw.githubusercontent.com/jrsoftware/issrc/1f29baac6c6dfd35e04c237af2ea51c482ee782a/Files/Languages/ChineseSimplified.isl

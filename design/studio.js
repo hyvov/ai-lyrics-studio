@@ -2,7 +2,7 @@ const $ = id => document.getElementById(id);
 const source = new Audio(), accompaniment = new Audio();
 source.preload = accompaniment.preload = 'metadata';
 let projects = [], current = 0, selected = 0, token = '', busy = false;
-let activeVoice = 'source', activeJob = null, pollTimer = null, modelReady = false, svcReady = false, yingReady = false;
+let activeVoice = 'source', activeJob = null, pollTimer = null, modelReady = false, svcReady = false, yingReady = false, transcriptionReady = false, separationReady = false;
 let batchQueue = [], batchProjectId = null;
 const PARAM_DEFAULTS = {melody:{steps:32,cfg:3,seed:-1},score:{steps:32,cfg:3,seed:-1},ying:{steps:64,cfg:2.5,seed:42,t_shift:.5,silence:.5}};
 const PARAM_INPUTS = {steps:'paramSteps',cfg:'paramCfg',seed:'paramSeed',t_shift:'paramShift',silence:'paramSilence'};
@@ -85,6 +85,7 @@ function render() {
   $('songName').textContent = document.querySelector('.project-name').textContent = p?.name || '开始一个新工程';
   $('projectCount').textContent = projects.length;
   $('projects').replaceChildren(); $('projectSelect').replaceChildren();
+  $('projectPickerOptions').replaceChildren(); $('projectPickerLabel').textContent=p?.name || '选择工程';
   projects.forEach((item, i) => {
     const row = document.createElement('div'); row.className = 'project-row' + (i === current ? ' active' : '');
     const button = document.createElement('button');
@@ -100,6 +101,9 @@ function render() {
     row.append(button, remove); $('projects').append(row);
     const option = document.createElement('option'); option.value = i; option.textContent = item.name; option.selected = i === current;
     $('projectSelect').append(option);
+    const choice=document.createElement('button'); choice.type='button'; choice.className='project-picker-option'; choice.setAttribute('aria-current',String(i===current));
+    const choiceName=document.createElement('span'); choiceName.textContent=item.name; const mark=document.createElement('span'); mark.className='project-picker-mark'; mark.textContent=i===current?'✓':''; choice.append(choiceName,mark);
+    choice.onclick=()=>{ $('projectPicker').open=false; switchProject(i); }; $('projectPickerOptions').append(choice);
   });
   if (!projects.length) {
     const empty = document.createElement('p'); empty.className = 'projects-empty'; empty.textContent = '还没有工程';
@@ -155,7 +159,8 @@ function render() {
   $('batchAlign').textContent = '提取未对齐歌词 ' + unaligned + ' 句';
   $('batchAlign').disabled = !unaligned || !!activeJob || !modelReady || !p?.assets.source || !!p?.source_issue;
   $('batchAlign').title = p?.source_issue || '批量提取未对齐的逐字时间；已有时间不会被覆盖';
-  $('transcribe').disabled = !p?.assets.source || !!activeJob || !!p?.source_issue;
+  $('transcribe').disabled = !p?.assets.source || !!activeJob || !!p?.source_issue || !transcriptionReady;
+  $('transcribe').title = !transcriptionReady ? '歌词识别组件未安装，可先导入 SRT 或 LRC。' : '';
   $('lyricHistory').disabled = !p || !!activeJob;
   $('batch').textContent = '生成待处理 ' + pending + ' 句'; $('batch').disabled = !pending || !!activeJob || !modelReady || !!p?.source_issue;
   $('batch').title = p?.source_issue || '仅生成待处理的改词，已生成的唱句直接复用；可在单句编辑中手动重新生成。';
@@ -170,7 +175,9 @@ function render() {
   $('recompose').title = '复用已生成的唱句重新合成人声和伴奏，无需重新运行演唱模型';
   $('exportVoice').disabled = $('exportMix').disabled = !p?.rendered_available || !p?.render_complete;
   if (!p?.assets.accompaniment) $('exportMix').disabled = true;
-  ['importSong', 'importSource', 'importAccompaniment', 'importLyrics', 'exportLyrics'].forEach(id => $(id).disabled = !p);
+  ['importSource', 'importAccompaniment', 'importLyrics', 'exportLyrics'].forEach(id => $(id).disabled = !p);
+  $('importSong').disabled = !p || !separationReady;
+  $('importSong').title = !separationReady ? '人声分离组件未安装，可先导入原唱干声和伴奏。' : '';
   $('seek').max = duration(); updateClock(+$('seek').value,true);
 }
 function pause() {
@@ -191,7 +198,7 @@ async function play(end = null) {
   try {
     if (accompaniment.readyState >= 1 && source.currentTime < accompaniment.duration) {
       accompaniment.currentTime = source.currentTime;
-      await accompaniment.play();
+      accompaniment.play().catch(() => {});
     }
     await source.play(); $('play').textContent = 'Ⅱ';
     cancelAnimationFrame(playbackFrame);
@@ -228,7 +235,7 @@ function updateClock(time=+$('seek').value,refreshAll=false) {
   const rows=$('lyricsList').children;
   if(refreshAll) Array.from(rows).forEach(row=>paintLyrics(row,time));
   if(index>=0) {
-    if(index!==selected) {
+    if(index!==selected && !$('edit').open && !$('timelineEditor').open) {
       const previous=selected;selected=index;
       rows[previous]?.classList.remove('selected');rows[index]?.classList.add('selected');
       paintLyrics(rows[previous],time);
@@ -486,6 +493,7 @@ function openEdit(i) {
   const line = project()?.lines[i]; if (!line) return;
   selected = i; render(); pause();
   enterOriginalEditor();
+  selected = i; // Loading the original track must not change the sentence being edited.
   $('editMeta').textContent = '第 ' + (i + 1) + ' 句 · ' + fmt(line.start) + ' — ' + fmt(line.end);
   $('sourceText').textContent = $('original').textContent = line.original;
   $('newLyrics').value = line.text;
@@ -607,7 +615,7 @@ function validate() {
     && a >= 0 && b-a >= .12-1e-9 && b <= duration() && (!previous || a >= previous.start+.12-1e-9)
     && (!next || b <= next.end-.12+1e-9) && chars.length > 0 && mappingOk && validParameters() && !midiError;
   $('save').disabled = !ok || busy;
-  $('slotCount').textContent = chars.length === n ? chars.length + ' / ' + n : n + ' 原唱单位 → ' + chars.length + ' 新词单位';
+  $('slotCount').textContent = '发音单位参考：原唱 ' + n + ' · 新词 ' + chars.length + '；实际对齐以分析结果为准';
   $('slots').replaceChildren();
   chars.forEach((char, i) => { const slot = document.createElement('div'), label = document.createElement('small'); label.textContent = '单位 ' + (i + 1); slot.append(label, document.createTextNode(char)); $('slots').append(slot); });
   if(mode==='ying') $('slotHint').textContent='YingMusic 可尝试不同字数；改动较大时请试听节奏和发音。';
@@ -739,9 +747,27 @@ document.querySelectorAll('.mute').forEach((b, i) => b.onclick = () => {
   const audio = i ? accompaniment : source; audio.muted = !audio.muted; b.classList.toggle('off', audio.muted); b.setAttribute('aria-pressed', audio.muted);
 });
 $('play').onclick = () => source.paused ? play() : pause();
-$('previewSegment').onclick = () => {
+$('previewSegment').onclick = async () => {
   if (!source.paused) { pause(); return; }
-  if (!validate()) return; seek(+$('start').value); play(+$('end').value);
+  const a=Number($('start').value), b=Number($('end').value);
+  if (!$('start').value || !$('end').value || !Number.isFinite(a) || !Number.isFinite(b) || a<0 || b<=a || b>duration()) {
+    toast('请先设置有效的试听起点和终点。'); return;
+  }
+  if (!project()?.assets.source) { toast('请先导入原唱或干声音频。'); return; }
+  if (source.readyState < 1) {
+    $('previewSegment').disabled=true;
+    try { await new Promise((resolve,reject)=>{
+      const timeout=setTimeout(()=>finish(false),10000);
+      function finish(ok){clearTimeout(timeout);source.removeEventListener('loadedmetadata',ready);source.removeEventListener('error',failed);ok?resolve():reject(new Error());}
+      function ready(){finish(true)} function failed(){finish(false)}
+      source.addEventListener('loadedmetadata',ready,{once:true});source.addEventListener('error',failed,{once:true});
+      if(source.readyState>=1)finish(true);
+    }); } catch (_) { toast('音频加载失败，请检查原唱文件。'); return; }
+    finally { $('previewSegment').disabled=false; }
+    if (!$('edit').open) return;
+  }
+  seek(a); await play(b);
+  if (!source.paused) $('previewSegment').textContent='Ⅱ 停止试听';
 };
 $('seek').oninput = () => { clipEnd = null; seek(+$('seek').value); };
 $('timeline').onclick = openTimeline;
@@ -897,11 +923,13 @@ async function init() {
     projects = await api('projects'); activeVoice = project()?.rendered_available ? 'rendered' : 'source'; render(); loadAudio(); $('saveState').textContent = '本机服务已连接';
     document.querySelector('.badge').textContent = modelReady ? '独立模型已就绪' : '模型环境待配置';
     const runtime = await api('runtime');
-    svcReady=!!runtime.svc_ready;
+    svcReady=!!runtime.svc_ready; transcriptionReady=!!runtime.transcription_ready; separationReady=!!runtime.separation_ready;
     yingReady=!!runtime.ying_ready;
     document.querySelector('[data-mode="ying"]').disabled=!yingReady;
     document.querySelector('[data-mode="ying"]').title=yingReady?'使用本机 YingMusic 模型生成': '未找到本机 YingMusic 模型';
     if (runtime.active_job) { activeJob = runtime.active_job; pollJob(); }
+    render();
+    if (!runtime.ready) { try { if (!localStorage.getItem('cisheng-setup-seen')) { localStorage.setItem('cisheng-setup-seen','1'); $('runtimeInfo').click(); } } catch (_) {} }
 
   } catch (error) {
     render(); document.querySelector('.badge').textContent = '服务未连接'; toast('请运行 python -m backend.app，再打开本机服务地址。');
@@ -922,7 +950,7 @@ function renderTimeline() {
   p.lines.forEach((x,i) => {
     const button = document.createElement('button');
     button.className = i === timelineSelected ? 'selected' : '';
-    const text = document.createElement('span'); text.textContent = (i+1)+'. '+x.text;
+    const text = document.createElement('span'); text.textContent = (i+1)+'. '+x.text; text.title = x.text;
     const time = document.createElement('small'); time.textContent=x.start.toFixed(3)+' — '+x.end.toFixed(3)+' s';
     button.append(text,time);button.onclick=async()=>{
       if (busy || timelineHasChanges() && !await askConfirm('切换句子','当前有未保存的修改，放弃后切换句子？','放弃并切换')) return;
@@ -1164,18 +1192,77 @@ document.querySelectorAll('[data-version]').forEach(button => button.onclick = (
 for (const [id, kind] of [['exportVoice','rendered'],['exportMix','mixed'],['exportSvc','svc'],['exportSvcMix','svc_mixed']]) {
   $(id).onclick = () => { const a = document.createElement('a'); a.href='/api/projects/'+project().id+'/exports/'+kind; a.download=kind+'.wav'; a.click(); };
 }
+async function refreshRuntimeDetails() {
+    const state = await api('runtime'); const root = $('runtimeDetails'); root.replaceChildren();
+    const heading=document.createElement('div'); heading.className='runtime-heading';
+    const title=document.createElement('strong'); title.textContent='组件状态';
+    const hint=document.createElement('span'); hint.textContent='按需安装，随时查看'; heading.append(title,hint); root.append(heading);
+    const grid=document.createElement('div'); grid.className='runtime-status-grid';
+    for (const [name,description,ready] of [
+      ['歌声生成','演唱与 MIDI 分析',state.ready],
+      ['人声分离','提取人声与伴奏',state.separation_ready],
+      ['自动识词','生成歌词草稿',state.transcription_ready],
+      ['音色转换','SVC 人声转换',state.svc_ready],
+      ['歌声对齐',state.singing_aligner?'HubertFA':'使用备用对齐',state.singing_aligner]
+    ]) {
+      const card=document.createElement('div'); card.className='runtime-status-card';
+      const label=document.createElement('div'); const strong=document.createElement('strong'); strong.textContent=name;
+      const small=document.createElement('small'); small.textContent=description; label.append(strong,small);
+      const badge=document.createElement('span'); badge.className='runtime-badge '+(ready?'is-ready':'is-missing'); badge.textContent=ready?'● 已就绪':'○ 未安装';
+      card.append(label,badge); grid.append(card);
+    }
+    root.append(grid);
+    const diagnostics=document.createElement('details'); diagnostics.className='setup-diagnostics'; const caption=document.createElement('summary');caption.textContent='详细组件与存储位置';diagnostics.append(caption);root.append(diagnostics);
+    const checks=document.createElement('div');checks.className='runtime-checks';
+    for(const [name,ready] of Object.entries(state.checks)) {const item=document.createElement('span');item.className='runtime-check '+(ready?'is-ready':'is-missing');item.textContent=(ready?'✓ ':'– ')+({singer:'演唱模型',pitch:'音高提取',notes:'音符分析',note_pitch:'音符基频',note_boundaries:'音符边界模型',model_files:'模型配置与词典',aligner:'歌词对齐',python:'独立运行环境',source:'推理程序',worker_dependencies:'音频处理依赖',gpu_packages:'GPU 运算组件'}[name]||name);checks.append(item);} diagnostics.append(checks);
+    for(const [label,value] of [['使用范围',state.limits],['模型目录',state.model_root],['推理程序',state.source_root]]) {const row=document.createElement('div');row.className='runtime-path';const name=document.createElement('strong');name.textContent=label;const content=document.createElement('span');content.textContent=value||'—';row.append(name,content);diagnostics.append(row);}
+    modelReady=!!state.ready; svcReady=!!state.svc_ready; transcriptionReady=!!state.transcription_ready; separationReady=!!state.separation_ready;
+    render();
+}
 $('runtimeInfo').onclick = async () => {
   try {
-    const state = await api('runtime'); const root = $('runtimeDetails'); root.replaceChildren();
-    const summary = document.createElement('p'); summary.textContent=state.ready?'模型文件已就绪，按需加载。':'模型环境不完整。';root.append(summary);
-    const separator = document.createElement('p'); separator.textContent = state.separation_ready ? '✓ 本地人声分离模型已就绪' : '人声分离模型未安装'; root.append(separator);
-    const recognizer = document.createElement('p'); recognizer.textContent = state.transcription_ready ? '✓ 本地歌词识别模型已就绪' : '歌词识别模型未安装'; root.append(recognizer);
-    const svc = document.createElement('p'); svc.textContent = state.svc_ready ? '✓ 本地音色转换模型已就绪' : '音色转换模型未安装'; root.append(svc);
-    const aligner = document.createElement('p'); aligner.textContent = state.singing_aligner ? '✓ 歌声对齐模型 HubertFA 已就绪' : '歌声对齐组件未配置，将使用 Qwen 备用对齐'; root.append(aligner);
-    for(const [name,ready] of Object.entries(state.checks)) {const p=document.createElement('p');p.textContent=(ready?'✓ ':'✕ ')+name;root.append(p);}
-    for(const text of [state.limits, '权重目录：'+state.model_root,'推理代码：'+state.source_root]) {const p=document.createElement('p');p.textContent=text;root.append(p);}
-    $('runtimeDialog').showModal();
+    await refreshRuntimeDetails();
+    $('runtimeDialog').showModal(); refreshModelSetup();
   } catch(error) {toast(error.message);}
 };
+let setupTimer = null, setupWasRunning = false;
+async function refreshModelSetup() {
+  clearTimeout(setupTimer);
+  if (!$('runtimeDialog').open) return;
+  try {
+    const state = await api('model-setup');
+    const percent = state.total ? Math.min(100, Math.floor(state.done / state.total * 100)) : 0;
+    $('setupMessage').textContent = state.message;
+    $('setupPercent').textContent = state.total ? percent + '%' : '';
+    $('setupProgress').value = percent;
+    $('setupCurrent').textContent = state.current || '共享 GPU 组件约 3.2 GiB，首次使用 AI 功能时自动安装一次。';
+    $('setupStart').disabled = state.status === 'running';
+    $('setupCancel').hidden = state.status !== 'running';
+    $('setupSkip').textContent = state.status === 'running' ? '后台下载，进入工作台' : '先进入工作台';
+    document.querySelectorAll('input[name=setupComponent]').forEach(input=>input.disabled=state.status==='running');
+    $('setupStart').textContent = state.status === 'running' ? '正在准备…' : state.status === 'failed' ? '重试下载与校验' : '下载所选模型';
+    if (state.status === 'running') { setupWasRunning=true; setupTimer = setTimeout(refreshModelSetup, 700); }
+    else if (setupWasRunning) { setupWasRunning=false; await refreshRuntimeDetails(); }
+  } catch (error) { $('setupMessage').textContent = '无法读取准备状态：' + error.message; }
+}
+$('setupStart').onclick=async()=>{
+  try { const components=Array.from(document.querySelectorAll('input[name=setupComponent]:checked')).map(x=>x.value); if (!components.length) { toast('请选择需要下载的模型。'); return; } $('setupStart').disabled=true; await api('model-setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({components})}); await refreshModelSetup(); }
+  catch(error){ $('setupStart').disabled=false; toast(error.message); }
+};
 $('closeRuntime').onclick=()=>$('runtimeDialog').close();
+$('setupCancel').onclick=async()=>{try {await api('model-setup/cancel',{method:'POST'});await refreshModelSetup();}catch(error){toast(error.message);}};
+$('setupSkip').onclick=()=>$('runtimeDialog').close();
+$('runtimeDialog').addEventListener('close',()=>clearTimeout(setupTimer));
 init();
+
+const downloadPicker = $('downloadPicker');
+for (const id of ['exportLyrics','exportVoice','exportMix']) $(id).addEventListener('click',()=>{downloadPicker.open=false;});
+document.addEventListener('click',event=>{if (!downloadPicker.contains(event.target)) downloadPicker.open=false;});
+downloadPicker.addEventListener('keydown',event=>{if(event.key==='Escape' && downloadPicker.open){downloadPicker.open=false;downloadPicker.querySelector('summary').focus();}});
+
+function syncDownloadFormats(){document.querySelectorAll('[data-export-format]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.exportFormat===$('exportFormat').value)));}
+document.querySelectorAll('[data-export-format]').forEach(button=>button.addEventListener('click',()=>{$('exportFormat').value=button.dataset.exportFormat;syncDownloadFormats();}));
+downloadPicker.addEventListener('toggle',syncDownloadFormats);
+
+document.addEventListener('click',event=>{const picker=$('projectPicker');if(!picker.contains(event.target))picker.open=false;});
+$('projectPicker').addEventListener('keydown',event=>{if(event.key==='Escape' && $('projectPicker').open){$('projectPicker').open=false;$('projectPicker').querySelector('summary').focus();}});

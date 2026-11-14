@@ -9,9 +9,18 @@ from backend.app import create_app
 from backend.jobs import RenderJobs
 from backend.store import Store
 from backend.transcribe_worker import result_drafts
+from backend.transcribe_worker import load_sentencepiece_file
+from unittest.mock import Mock
 
 
 class TranscriptionTests(unittest.TestCase):
+    def test_tokenizer_reads_chinese_paths_as_model_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'中文目录'/'分词器.model';path.parent.mkdir();path.write_bytes(b'model-proto')
+            processor=Mock();processor.LoadFromSerializedProto.return_value=True
+            self.assertTrue(load_sentencepiece_file(processor,path))
+            processor.LoadFromSerializedProto.assert_called_once_with(b'model-proto')
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         root=Path(self.tmp.name);self.assets=root/'assets';self.assets.mkdir()

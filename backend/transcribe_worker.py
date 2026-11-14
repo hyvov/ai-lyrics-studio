@@ -6,6 +6,24 @@ import re
 import sys
 import traceback
 from pathlib import Path
+from contextlib import contextmanager
+
+
+def load_sentencepiece_file(processor, filename):
+    """Read through Python's Unicode-safe file API, not the Windows C++ fopen."""
+    return processor.LoadFromSerializedProto(Path(filename).read_bytes())
+
+
+@contextmanager
+def sentencepiece_file_loading():
+    import sentencepiece
+    cls = sentencepiece.SentencePieceProcessor
+    original = cls.Load
+    cls.Load = load_sentencepiece_file
+    try:
+        yield
+    finally:
+        cls.Load = original
 
 
 def report(stage, **kwargs):
@@ -84,7 +102,8 @@ def run(config):
     torch.cuda.is_bf16_supported=lambda:False
     options=FireRedAsr2Config(use_gpu=True,use_half=True,beam_size=1,nbest=1,decode_max_len=0,
         softmax_smoothing=1.25,aed_length_penalty=.6,eos_penalty=1.,return_timestamp=True)
-    model=FireRedAsr2.from_pretrained('aed',config['model'],options)
+    with sentencepiece_file_loading():
+        model=FireRedAsr2.from_pretrained('aed',config['model'],options)
     drafts=[]
     for index,(a,b) in enumerate(chunks,1):
         report('asr_recognize',position=index,total=len(chunks))

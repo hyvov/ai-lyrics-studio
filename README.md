@@ -115,18 +115,15 @@ SRT/LRC 导入支持 UTF-8、带 BOM 的 UTF-16 和常见 GBK/GB18030 编码，�
 
 以本地 SoulX Studio 的实际时间轴、原词校正与生成缓存逻辑为主要参考，并研究 JIZURA 的时间轴拖动、缩放和平移交互，详见 [优化参考与对应改进](docs/studio-reference.md)。顶部“歌词时间轴”可独立提取每个字/英文词的时间、校正原词、拖动波形边界、试听并手动保存；这些时间会参与下一次真实生成。整句“改词”窗口也可直接拖动边界。波形显示按窗口宽度绘制密集细线，放大后使用约 5ms 的底层包络细节。
 
-## Windows 客户端
+## Windows 客户端与安装包
 
-在本机双击 `dist/词声 Studio.exe`，打开独立窗口。客户端使用系统 WebView2 显示界面，仍通过本机回环地址连接 Python 服务，工程和模型保存在本项目的位置。首次打开时如服务未运行，客户端会尝试启动它；已有服务会被复用。关闭客户端时，若它启动的服务仍有模型任务，服务将继续运行以保护任务。
+交付文件为 `dist/CiSheng-Studio-0.2.0-setup.exe`。安装包自带独立 Python、FFmpeg、界面、推理代码及较小依赖，不需要先安装 SoulX Studio 或系统 Python。
 
-当前客户端是此工作区的本机启动器，不是可复制到其他电脑独立运行的安装包：请保留 EXE 在项目的 `dist/` 内，并保留项目代码、Python 依赖、`runtime/`、`data/` 以及独立模型运行环境。需要 Microsoft Edge WebView2 Runtime。
+首次启动的“模型与组件”可选择歌声生成、人声分离、自动识词及 SVC。共享 GPU 大组件自动安装一次；模型从固定的官方版本下载、续传并核对 SHA-256。可以跳过下载，先创建工程、导入音频和字幕、播放、编辑时间轴及导出字幕。
 
-重建客户端：
+默认程序目录是 `%LOCALAPPDATA%/Programs/CiShengStudio`；工程、下载模型及 GPU 组件独立存放于 `%LOCALAPPDATA%/CiShengStudio`。升级和卸载程序保留个人数据。开发版工程不会被自动移动；原开发版客户端仍可使用原工作区。
 
-```powershell
-python -m pip install -r requirements-desktop.txt
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name "词声 Studio" desktop/launcher.py
-```
+重建安装包使用 `scripts/build_release.py`；运行时输入、构建工具和验收范围见 [安装包分发记录](docs/model-distribution.md)。安装目录附带逐文件 SHA-256 清单及第三方包版本清单。此构建使用已验证的本地运行时快照，不把带本机路径的 `pip freeze` 冒充全新机器的源码构建锁文件。
 
 ### YingMusic 唱句模式（本机实验功能）
 
@@ -143,3 +140,9 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name "词声 St
 英文音素处理由仓库中的 `backend/soulx_processor.py` 提供；重新配置固定版本的上游运行时无需修改其源码。SVC 窗口支持选择原唱轨或改词轨、快速/标准/精细三档（16/32/64 步），以及可选的参考音域自动匹配。
 
 MIDI 音符缺少有效音高时，优先用对应位置可靠的原唱 F0 估算；该位置没有足够浊音帧时才参考邻近音符。现有有效音符不自动平滑或修改，结果仍需试听。
+
+### 模型与组件准备
+
+GPU 使用 PyTorch 2.8.0 / CUDA 12.8 官方 Windows wheel。模型安装前检查 CUDA 运算；缺少驱动时提供明确错误。模型清单包含演唱、RMVPE、ROSVOT、RWBD、Qwen 对齐、SVC、Whisper、人声分离及 FireRedASR2 的权重和必要配置。
+
+支持暂停续传、校验已有文件及修复损坏文件。修复前将旧文件保留为 `.invalid-*` 备份，仅在新文件哈希正确后正式安装。没有下载对应模型时，仅禁用依赖该模型的功能。

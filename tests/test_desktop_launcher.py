@@ -15,6 +15,12 @@ class DesktopLauncherTests(unittest.TestCase):
             launcher.shutdown_owned(proc)
         proc.terminate.assert_not_called()
 
+    def test_closing_keeps_active_model_download_running(self):
+        proc = Mock(); proc.poll.return_value = None
+        with patch.object(launcher, 'request', return_value=b'{"active_job":null,"active_model_setup":true}'):
+            launcher.shutdown_owned(proc)
+        proc.terminate.assert_not_called()
+
     def test_closing_stops_owned_idle_service(self):
         proc = Mock(); proc.poll.return_value = None
         with patch.object(launcher, 'request', return_value=b'{"active_job":null}'):
