@@ -230,6 +230,7 @@ function paintLyrics(row,time) {
 }
 function updateClock(time=+$('seek').value,refreshAll=false) {
   $('clock').textContent = fmt(time) + ' / ' + fmt(duration());
+  document.querySelectorAll('.track-wave').forEach(track=>{const total=duration();track.style.setProperty('--track-position',Math.max(0,Math.min(100,total?time/total*100:0))+'%');track.setAttribute('aria-valuemax',String(total));track.setAttribute('aria-valuenow',String(Math.max(0,Math.min(time,total)).toFixed(1)));track.setAttribute('aria-valuetext',fmt(time)+' / '+fmt(total));});
   const lines=project()?.lines || [];
   const index=lines.findIndex(line=>time>=line.start && time<line.end);
   const rows=$('lyricsList').children;
@@ -1266,3 +1267,10 @@ downloadPicker.addEventListener('toggle',syncDownloadFormats);
 
 document.addEventListener('click',event=>{const picker=$('projectPicker');if(!picker.contains(event.target))picker.open=false;});
 $('projectPicker').addEventListener('keydown',event=>{if(event.key==='Escape' && $('projectPicker').open){$('projectPicker').open=false;$('projectPicker').querySelector('summary').focus();}});
+
+document.querySelectorAll('.track-wave').forEach(track=>{
+  function position(event){if(!project()?.assets.source){toast('请先导入原唱或干声音频。');return;}const rect=track.getBoundingClientRect();if(!rect.width)return;clipEnd=null;seek(Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width))*duration());}
+  track.addEventListener('pointerdown',event=>{if(event.button!==0)return;event.preventDefault();track.focus();track.setPointerCapture(event.pointerId);position(event);});
+  track.addEventListener('pointermove',event=>{if(track.hasPointerCapture(event.pointerId))position(event);});
+  track.addEventListener('keydown',event=>{if(!project()?.assets.source)return;let target=Number($('seek').value);if(event.key==='ArrowRight'||event.key==='ArrowUp')target+=event.shiftKey?5:1;else if(event.key==='ArrowLeft'||event.key==='ArrowDown')target-=event.shiftKey?5:1;else if(event.key==='Home')target=0;else if(event.key==='End')target=duration();else return;event.preventDefault();clipEnd=null;seek(target);});
+});

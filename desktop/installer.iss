@@ -1,4 +1,4 @@
-#define AppVersion "0.2.0"
+#define AppVersion "0.2.1"
 #define AppName "词声 Studio"
 #ifndef Payload
   #define Payload "..\build\release"
@@ -24,6 +24,7 @@ Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
 DisableProgramGroupPage=yes
+SetupIconFile=app.ico
 UninstallDisplayIcon={app}\词声 Studio.exe
 CloseApplications=yes
 RestartApplications=no

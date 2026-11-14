@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '0.2.0'
+VERSION = '0.2.1'
 SKIP_NAMES = {'.git', '__pycache__', '.pytest_cache', 'node_modules', '.soulx-verified'}
 SKIP_PACKAGES = {'torch', 'torchaudio', 'torio'}
 
@@ -101,7 +101,7 @@ def main():
         stage(target)
     env = dict(os.environ, PYTHONPATH=str(ROOT / 'build/build-deps'), PYTHONUTF8='1')
     subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--windowed',
-                    '--name', '词声 Studio', '--distpath', str(ROOT / 'build/launcher'),
+                    '--name', '词声 Studio', '--icon', str(ROOT / 'desktop/app.ico'), '--distpath', str(ROOT / 'build/launcher'),
                     '--workpath', str(ROOT / 'build/freeze'), '--specpath', str(ROOT / 'build'),
                     '--exclude-module', 'torch', '--exclude-module', 'matplotlib', '--exclude-module', 'numpy',
                     str(ROOT / 'desktop/launcher.py')], env=env, cwd=ROOT, check=True)

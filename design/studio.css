@@ -210,3 +210,7 @@ body[data-theme] .timeline-word-editor .wave-region,body[data-theme] .svc-compon
 @media(max-width:800px){.asset-tools{padding:8px 12px;gap:7px}.asset-group+.asset-group{border-left:0;padding-left:0}.brand{font-size:18px}.logo{width:38px;height:38px}}
 
 .text-edit{grid-template-columns:minmax(0,1fr) minmax(0,1.8fr);align-items:start}#slotCount.slot-count{margin-top:6px;color:var(--muted);font-size:11px;font-weight:400;line-height:1.5;text-align:left}@media(max-width:800px){.text-edit{grid-template-columns:1fr}}
+
+#seek[hidden]{display:none}.track-wave{position:relative;flex:1;min-width:0;height:42px;cursor:pointer;touch-action:none;border-radius:6px;overflow:hidden;--track-position:0%}.track .track-wave .wave{width:100%;height:100%}.track-progress{position:absolute;z-index:1;inset:0 auto 0 0;width:var(--track-position);background:var(--accent);opacity:.12;pointer-events:none}.track-playhead{position:absolute;z-index:2;left:var(--track-position);top:2px;bottom:2px;width:2px;background:var(--accent);transform:translateX(-50%);pointer-events:none;box-shadow:0 0 0 1px var(--surface)}.track-wave:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+
+.brand img.logo{object-fit:cover;background:transparent;border-radius:12px;flex-shrink:0}

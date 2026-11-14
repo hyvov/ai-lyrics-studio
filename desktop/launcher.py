@@ -130,6 +130,8 @@ def shutdown_owned(process):
 def main():
     import webview
     root = workspace()
+    if os.name == 'nt':
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('CiShengStudio.Desktop')
     data = configure_installation(root)
     process = None
     try:
@@ -139,6 +141,7 @@ def main():
         webview.create_window('词声 Studio', f'{URL}/?launch={time.time_ns()}', width=1500, height=950,
                               min_size=(960, 680), background_color='#fcf7f1', text_select=True)
         webview.start(gui='edgechromium', private_mode=False,
+                      icon=str(root / 'design' / 'app.ico'),
                       storage_path=str(data / 'desktop-webview'))
     finally:
         shutdown_owned(process)
