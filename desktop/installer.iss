@@ -1,5 +1,5 @@
-#define AppVersion "0.2.2"
-#define AppName "词声 Studio"
+#define AppVersion "0.2.3"
+#define AppName "FunnySinger"
 #ifndef Payload
   #define Payload "..\build\release"
 #endif
@@ -11,7 +11,7 @@
 AppId={{5F81BBAA-68CC-4A1D-A947-2E9A0FC876DD}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=词声 Studio
+AppPublisher=FunnySinger
 DefaultDirName={localappdata}\Programs\CiShengStudio
 DefaultGroupName={#AppName}
 PrivilegesRequired=lowest
@@ -19,13 +19,13 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir={#Output}
-OutputBaseFilename=CiSheng-Studio-{#AppVersion}-setup
+OutputBaseFilename=FunnySinger-{#AppVersion}-setup
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
 DisableProgramGroupPage=yes
 SetupIconFile=app.ico
-UninstallDisplayIcon={app}\词声 Studio.exe
+UninstallDisplayIcon={app}\FunnySinger.exe
 CloseApplications=yes
 RestartApplications=no
 SetupLogging=yes
@@ -42,12 +42,12 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Source: "{#Payload}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\词声 Studio.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\词声 Studio.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\{#AppName}"; Filename: "{app}\FunnySinger.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\FunnySinger.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\support\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "正在安装微软 WebView2 显示组件…"; Check: NeedsWebView; Flags: waituntilterminated runhidden
-Filename: "{app}\词声 Studio.exe"; Description: "打开词声 Studio，选择需要的模型"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\FunnySinger.exe"; Description: "打开FunnySinger，选择需要的模型"; Flags: nowait postinstall skipifsilent
 
 [Code]
 function NeedsWebView: Boolean;

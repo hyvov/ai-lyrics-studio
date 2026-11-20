@@ -1269,7 +1269,7 @@ $('closeRuntime').onclick=()=>$('runtimeDialog').close();
 $('setupCancel').onclick=async()=>{try {await api('model-setup/cancel',{method:'POST'});await refreshModelSetup();}catch(error){toast(error.message);}};
 $('setupSkip').onclick=()=>$('runtimeDialog').close();
 $('runtimeDialog').addEventListener('close',()=>clearTimeout(setupTimer));
-init();
+init().then(checkForUpdates);
 
 const downloadPicker = $('downloadPicker');
 for (const id of ['exportLyrics','exportVoice','exportMix']) $(id).addEventListener('click',()=>{downloadPicker.open=false;});
@@ -1289,3 +1289,24 @@ document.querySelectorAll('.track-wave').forEach(track=>{
   track.addEventListener('pointermove',event=>{if(track.hasPointerCapture(event.pointerId))position(event);});
   track.addEventListener('keydown',event=>{if(!project()?.assets.source)return;let target=Number($('seek').value);if(event.key==='ArrowRight'||event.key==='ArrowUp')target+=event.shiftKey?5:1;else if(event.key==='ArrowLeft'||event.key==='ArrowDown')target-=event.shiftKey?5:1;else if(event.key==='Home')target=0;else if(event.key==='End')target=duration();else return;event.preventDefault();clipEnd=null;seek(target);});
 });
+
+let updateTimer=null, updateRequested=false;
+async function pollUpdate(){
+  try {
+    const state=await api('update');
+    const labels={idle:'尚未检查更新。',checking:'正在检查更新…',available:'发现新版本，是否更新？',downloading:'正在准备更新…',current:'当前已是最新版本。',ready:'更新已准备好。',deferred:'当前有任务运行，请稍后更新。',failed:'暂时无法更新，请重试。',development:'开发版暂不支持更新。',installing:'正在打开更新程序…'};
+    $('updateMessage').textContent=labels[state.status]||'暂时无法检查更新。';
+    $('updateProgress').hidden=state.status!=='downloading'; $('updateProgress').value=state.progress||0;
+    $('updateInstall').hidden=!['available','ready'].includes(state.status);
+    $('updateRetry').disabled=['checking','downloading','installing'].includes(state.status);
+    if(['checking','downloading'].includes(state.status))updateTimer=setTimeout(pollUpdate,1500);
+    else if(state.status==='ready' && updateRequested){updateRequested=false;try{await api('update/install',{method:'POST'});await pollUpdate();}catch(error){toast(error.message);}}
+    if(['available','ready'].includes(state.status)){$('updateButton').textContent='↑ 发现新版本';$('updateButton').classList.add('update-available');}
+    else if(state.status==='current'){$('updateButton').textContent='↻ 检查更新';$('updateButton').classList.remove('update-available');}
+  }catch(error){$('updateMessage').textContent='暂时无法检查更新，请重试。';}
+}
+async function checkForUpdates(){try{clearTimeout(updateTimer);await api('update/check',{method:'POST'});await pollUpdate();}catch(error){$('updateMessage').textContent='暂时无法检查更新，请重试。';}}
+$('updateButton').onclick=()=>{if(!$('updateDialog').open)$('updateDialog').showModal();pollUpdate();};
+$('closeUpdate').onclick=()=>$('updateDialog').close();
+$('updateRetry').onclick=checkForUpdates;
+$('updateInstall').onclick=async()=>{try{const state=await api('update');if(state.status==='available'){updateRequested=true;await api('update/download',{method:'POST'});}else if(state.status==='ready'){await api('update/install',{method:'POST'});}await pollUpdate();}catch(error){updateRequested=false;toast(error.message);}};

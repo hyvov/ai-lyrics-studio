@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.store import Conflict, Store, export_lrc, export_srt, parse_lyrics,snapshot_lyrics,validate_project
 from backend.jobs import RenderJobs
 from backend.model_setup import ModelSetup
+from backend.updater import Updater
 from backend.media import source_issue,waveform
 from backend.singing import fingerprint, composition_fingerprint, svc_fingerprint, units
 from backend.timeline import alignment_fingerprint, cached_alignment, validate_timings
@@ -35,6 +36,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     token = secrets.token_urlsafe(32)
     jobs = RenderJobs(store, assets, data / 'jobs')
     model_setup = ModelSetup(jobs.runtime.models, jobs.runtime.component_home / 'svc/pretrained_models', jobs.runtime.music_models, runtime=jobs.runtime)
+    updater = Updater(ROOT, data, jobs, model_setup)
     @asynccontextmanager
     async def lifespan(_):
         yield
@@ -117,6 +119,25 @@ def create_app(data_root: Path | None = None) -> FastAPI:
         if not isinstance(value, dict):
             raise ValueError('请求须为 JSON 对象。')
         return value
+
+    @app.get('/api/update')
+    def update_state():
+        return updater.snapshot()
+
+    @app.post('/api/update/check', status_code=202)
+    def check_update():
+        updater.start()
+        return updater.snapshot()
+
+    @app.post('/api/update/download', status_code=202)
+    def download_update():
+        updater.start(download=True)
+        return updater.snapshot()
+
+    @app.post('/api/update/install')
+    def install_update():
+        updater.install()
+        return updater.snapshot()
 
     @app.get('/api/model-setup')
     def model_setup_state():
@@ -247,7 +268,8 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             active = jobs.get(jobs.active) if jobs.active else None
         return {**jobs.runtime.status(), 'separation_ready': bool(jobs.runtime.separation_config()),
                 'transcription_ready': bool(jobs.runtime.transcription_config()), 'svc_ready':bool(jobs.runtime.svc_config()), 'ying_ready':bool(jobs.runtime.ying_config()), 'active_job': active,
-                'active_model_setup': model_setup.snapshot()['status'] == 'running'}
+                'active_model_setup': model_setup.snapshot()['status'] == 'running',
+                'active_update': updater.snapshot()['status'] in ('checking', 'downloading')}
 
     @app.get('/api/projects/{project_id}')
     def get_project(project_id: str):

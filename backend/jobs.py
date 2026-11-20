@@ -70,7 +70,7 @@ class RenderJobs:
             svc_config=None
             if kind=='render' and any(line.get('restore') for line in selected):
                 svc_config=self.runtime.svc_config()
-                if not svc_config:raise ValueError('原句音色转换需要词声 Studio 独立 SVC 组件。')
+                if not svc_config:raise ValueError('原句音色转换需要FunnySinger 独立 SVC 组件。')
             job_id = uuid4().hex
             directory = self.root / job_id
             directory.mkdir()

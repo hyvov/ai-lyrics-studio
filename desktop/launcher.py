@@ -1,4 +1,4 @@
-"""Windows desktop shell for the existing local 词声 Studio workspace."""
+"""Windows desktop shell for the existing local FunnySinger workspace."""
 from __future__ import annotations
 
 import ctypes
@@ -58,7 +58,7 @@ def is_studio():
     try:
         page = request('/').decode('utf-8')
         session = json.loads(request('/api/session'))
-        return ('<title>词声 Studio</title>' in page and bool(session.get('token'))
+        return ('<title>FunnySinger</title>' in page and bool(session.get('token'))
                 and session.get('installation') == str(workspace())
                 and session.get('data_root') == str(Path(os.environ.get('AI_LYRICS_DATA', workspace() / 'data')).resolve()))
     except (OSError, ValueError, URLError):
@@ -119,7 +119,7 @@ def shutdown_owned(process):
         return
     try:
         runtime = json.loads(request('/api/runtime'))
-        if runtime.get('active_job') or runtime.get('active_model_setup'):
+        if runtime.get('active_job') or runtime.get('active_model_setup') or runtime.get('active_update'):
             # Keep an active model task or model download alive when the window closes.
             return
     except (OSError, ValueError, URLError):
@@ -138,7 +138,7 @@ def main():
         process = ensure_server(root)
         webview.settings['ALLOW_DOWNLOADS'] = True
         # Force a fresh document on launch even with a persistent WebView profile.
-        webview.create_window('词声 Studio', f'{URL}/?launch={time.time_ns()}', width=1500, height=950,
+        webview.create_window('FunnySinger', f'{URL}/?launch={time.time_ns()}', width=1500, height=950,
                               min_size=(960, 680), background_color='#fcf7f1', text_select=True)
         webview.start(gui='edgechromium', private_mode=False,
                       icon=str(root / 'design' / 'app.ico'),
@@ -151,5 +151,5 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as exc:
-        ctypes.windll.user32.MessageBoxW(None, str(exc), '词声 Studio 启动失败', 0x10)
+        ctypes.windll.user32.MessageBoxW(None, str(exc), 'FunnySinger 启动失败', 0x10)
         raise SystemExit(1)

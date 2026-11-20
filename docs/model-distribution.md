@@ -1,8 +1,8 @@
-# 词声 Studio 0.2.2 安装包与模型分发
+# FunnySinger 0.2.3 安装包与模型分发
 
 ## 安装结果
 
-交付 `dist/CiSheng-Studio-0.2.2-setup.exe`，Windows 10/11 x64 当前用户安装。
+交付 `dist/FunnySinger-0.2.3-setup.exe`，Windows 10/11 x64 当前用户安装。
 安装包包含独立 Python、FFmpeg、前后端、推理代码、HubertFA 对齐组件及较小的依赖。大型 CUDA 运算库和大模型在客户端选择下载；不要求安装 SoulX Studio、系统 Python、Git 或 CUDA Toolkit。
 AI 功能仍需要可用的 NVIDIA 显卡驱动。基础工程管理、音频播放、字幕导入、歌词和时间轴编辑、字幕导出不依赖大模型。
 

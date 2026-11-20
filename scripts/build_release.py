@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '0.2.2'
+VERSION = '0.2.3'
 SKIP_NAMES = {'.git', '__pycache__', '.pytest_cache', 'node_modules', '.soulx-verified'}
 SKIP_PACKAGES = {'torch', 'torchaudio', 'torio'}
 
@@ -78,7 +78,7 @@ def stage(target):
                        if (d.metadata.get('Name') or '').lower() not in ('torch', 'torchaudio')], key=lambda x:x['name'] or '')
     (notices / 'python-packages.json').write_text(json.dumps(packages, indent=2), encoding='utf-8')
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-    (target / 'release.json').write_text(json.dumps({'name':'词声 Studio','version':VERSION,
+    (target / 'release.json').write_text(json.dumps({'name':'FunnySinger','version':VERSION,
         'git_base':revision,'runtime':'Python 3.12 / PyTorch 2.8.0 CUDA 12.8',
         'distribution':'independent-personal-build'}, ensure_ascii=False, indent=2), encoding='utf-8')
 
@@ -101,16 +101,16 @@ def main():
         stage(target)
     env = dict(os.environ, PYTHONPATH=str(ROOT / 'build/build-deps'), PYTHONUTF8='1')
     subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--windowed',
-                    '--name', '词声 Studio', '--icon', str(ROOT / 'desktop/app.ico'), '--distpath', str(ROOT / 'build/launcher'),
+                    '--name', 'FunnySinger', '--icon', str(ROOT / 'desktop/app.ico'), '--distpath', str(ROOT / 'build/launcher'),
                     '--workpath', str(ROOT / 'build/freeze'), '--specpath', str(ROOT / 'build'),
                     '--exclude-module', 'torch', '--exclude-module', 'matplotlib', '--exclude-module', 'numpy',
                     str(ROOT / 'desktop/launcher.py')], env=env, cwd=ROOT, check=True)
-    shutil.copy2(ROOT / 'build/launcher/词声 Studio.exe', target / '词声 Studio.exe')
+    shutil.copy2(ROOT / 'build/launcher/FunnySinger.exe', target / 'FunnySinger.exe')
     inventory(target)
     compiler = ROOT / 'build/inno/ISCC.exe'
     subprocess.run([str(compiler), '/Qp', '/DPayload='+str(target), '/DOutput='+str(ROOT / 'dist'),
                     str(ROOT / 'desktop/installer.iss')], cwd=ROOT, check=True)
-    output = ROOT / f'dist/CiSheng-Studio-{VERSION}-setup.exe'
+    output = ROOT / f'dist/FunnySinger-{VERSION}-setup.exe'
     output.with_suffix('.exe.sha256').write_text(digest(output)+'  '+output.name+'\n', encoding='utf-8')
     print('Installer: '+str(output), flush=True)
 

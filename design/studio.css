@@ -214,3 +214,5 @@ body[data-theme] .timeline-word-editor .wave-region,body[data-theme] .svc-compon
 #seek[hidden]{display:none}.track-wave{position:relative;flex:1;min-width:0;height:42px;cursor:pointer;touch-action:none;border-radius:6px;overflow:hidden;--track-position:0%}.track .track-wave .wave{width:100%;height:100%}.track-progress{position:absolute;z-index:1;inset:0 auto 0 0;width:var(--track-position);background:var(--accent);opacity:.12;pointer-events:none}.track-playhead{position:absolute;z-index:2;left:var(--track-position);top:2px;bottom:2px;width:2px;background:var(--accent);transform:translateX(-50%);pointer-events:none;box-shadow:0 0 0 1px var(--surface)}.track-wave:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 
 .brand img.logo{object-fit:cover;background:transparent;border-radius:12px;flex-shrink:0}
+
+.update-dialog{width:min(480px,calc(100vw - 32px))}.update-body{padding:22px}.update-body progress{width:100%;margin-top:15px;accent-color:var(--accent)}.update-body strong{font-size:14px;overflow-wrap:anywhere}.update-body p{line-height:1.7}
