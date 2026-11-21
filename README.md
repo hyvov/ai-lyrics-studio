@@ -1,7 +1,6 @@
 # FunnySinger
 
-参照 SoulX Studio 操作布局开发的本地 AI 唱歌改词工具。模型和 GPU 运行环境保存在本项目独立目录，不与 SoulX Studio 共用。
-
+参照 SoulX Studio 操作布局开发的本地 AI 唱歌改词工具。
 ## 当前可用
 
 - 工程与素材保存到本机，刷新后恢复。
