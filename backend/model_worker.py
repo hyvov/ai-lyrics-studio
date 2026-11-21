@@ -45,8 +45,13 @@ def adapt_llama():
     if 'position_embeddings' not in inspect.signature(LlamaAttention.forward).parameters:
         return
 
+    # Each layer of a DiffLlama pass receives the same position tensor.
+    # Reuse its default RoPE embedding for this pass only.
+    last_positions = last_embeddings = last_spec = None
+
     def forward(self, hidden_states, cond_embedding, attention_mask=None, position_ids=None,
                 past_key_value=None, output_attentions=False, use_cache=False, **kwargs):
+        nonlocal last_positions, last_embeddings, last_spec
         if past_key_value is not None or use_cache:
             # Upstream passes use_cache=True by default even though no cached values
             # are consumed between its diffusion steps. Never retain a KV cache.
@@ -56,7 +61,17 @@ def adapt_llama():
         if not hasattr(self, '_lyrics_rotary'):
             self._lyrics_rotary = LlamaRotaryEmbedding(self.self_attn.config).to(hidden_states.device)
         self.self_attn.config._attn_implementation = 'sdpa'
-        positions = self._lyrics_rotary(hidden_states, position_ids)
+        rotary = self._lyrics_rotary
+        config = self.self_attn.config
+        spec = (hidden_states.device, hidden_states.dtype, rotary.inv_freq.shape,
+                getattr(config, 'rope_theta', None))
+        reusable = rotary.rope_type == 'default' and not self.training and torch.is_inference_mode_enabled()
+        if reusable and position_ids is last_positions and spec == last_spec and last_embeddings is not None:
+            positions = last_embeddings
+        else:
+            positions = rotary(hidden_states, position_ids)
+            if reusable:
+                last_positions, last_spec, last_embeddings = position_ids, spec, positions
         attention = self.self_attn(hidden_states=hidden_states, attention_mask=attention_mask,
                                    position_ids=position_ids, position_embeddings=positions,
                                    past_key_value=None, use_cache=False, output_attentions=False)
@@ -112,24 +127,32 @@ def align_words(aligner, waveform, text, sr, diagnostic_path=None):
     return words, spans, indices
 
 
-def map_target_notes(original, replacement, note_words, durations, pitches, types, f0, mode, midi_slots=None):
+def map_target_notes(original, replacement, note_words, durations, pitches, types, f0, mode, midi_slots=None, assignment=None):
     """Keep source note events while assigning one English word across grouped attacks."""
     from preprocess.tools.g2p import g2p_transform
     import numpy as np
     from backend.midi_slots import validate_midi_slots
     source_units, target_units = units(original), units(replacement)
-    unit_map = replacement_unit_map(original, replacement)
+    manual = mode == 'score' and assignment is not None
+    if manual and len(assignment) != len(note_words):
+        raise ValueError('音符分析已改变，请重新分配歌词槽位。')
+    unit_map = [] if manual else replacement_unit_map(original, replacement)
     source_index = -1
     event_sources, target_words = [], []
-    for word, kind in zip(note_words, types):
+    for event_index, (word, kind) in enumerate(zip(note_words, types)):
         if word == '<SP>':
-            event_sources.append(None); target_words.append('<SP>'); continue
-        if int(kind) == 2:
-            source_index += 1
-        if source_index < 0 or source_index >= len(source_units) or word.casefold() != source_units[source_index].casefold():
-            raise ValueError('音符槽位与原词无法一致映射，请校正原词或边界。')
-        event_sources.append(source_index)
-        target_words.append(target_units[unit_map[source_index]])
+            event_sources.append(None)
+            target_index = None
+        else:
+            if int(kind) == 2:
+                source_index += 1
+            if source_index < 0 or source_index >= len(source_units) or word.casefold() != source_units[source_index].casefold():
+                raise ValueError('音符槽位与原词无法一致映射，请校正原词或边界。')
+            event_sources.append(source_index)
+            target_index = None if manual else unit_map[source_index]
+        if manual:
+            target_index = assignment[event_index]
+        target_words.append('<SP>' if target_index is None else target_units[target_index])
     if source_index + 1 != len(source_units):
         raise ValueError('音符分析没有覆盖全部原唱歌词，请检查边界。')
     target_types = [int(kind) for kind in types]
@@ -138,21 +161,41 @@ def map_target_notes(original, replacement, note_words, durations, pitches, type
     target_f0 = np.asarray(f0, dtype=np.float32).copy()
     target_phonemes = g2p_transform(target_words, 'Mandarin')
     controls = {entry['index']: entry for entry in (validate_midi_slots(midi_slots, replacement) or [])} if mode == 'score' else {}
-    affected = set(changed_source_units(original, replacement))
+    affected = set() if manual else set(changed_source_units(original, replacement))
+    if manual:
+        for i, word in enumerate(target_words):
+            if event_sources[i] is not None and word.casefold() != note_words[i].casefold():
+                affected.add(event_sources[i])
+            if word == '<SP>':
+                target_types[i], target_pitches[i] = 1, 0
+            else:
+                same_unit = i > 0 and assignment[i] == assignment[i-1]
+                target_types[i] = 3 if same_unit and (not word.isascii() or int(types[i]) == 3) else 2
+                if not target_pitches[i] or note_words[i] == '<SP>':
+                    donor = min((j for j, pitch in enumerate(pitches) if pitch > 0 and event_sources[j] is not None),
+                                key=lambda j: abs(j-i))
+                    target_pitches[i] = pitches[donor]
+                    if event_sources[donor] is not None:
+                        affected.add(event_sources[donor])
     merges = []
     for target_index, target_word in enumerate(target_units):
         grouped_sources = [i for i, mapped in enumerate(unit_map) if mapped == target_index]
         control = controls.get(target_index)
-        if len(grouped_sources) < 2 and not control:
-            continue
-        events = [i for i, source in enumerate(event_sources) if source in grouped_sources]
+        if manual:
+            events = [i for i, unit in enumerate(assignment) if unit == target_index]
+            if not target_word.isascii() or (len(events) == 1 and not control):
+                continue
+        else:
+            if len(grouped_sources) < 2 and not control:
+                continue
+            events = [i for i, source in enumerate(event_sources) if source in grouped_sources]
         attacks = [i for i in events if int(types[i]) == 2]
         if len(grouped_sources) >= 2 and len(attacks) < 2:
             raise ValueError(f'英文词“{target_word}”映射的原唱音符不足，无法跨音符演唱。')
         token = g2p_transform([target_word], 'Mandarin')[0]
         if not token.startswith('en_'):
             raise ValueError('多个原唱字目前只能合并映射到一个英文单词。')
-        if any(note_words[i] == '<SP>' for i in range(events[0], events[-1] + 1)):
+        if not manual and any(note_words[i] == '<SP>' for i in range(events[0], events[-1] + 1)):
             raise ValueError(f'英文词“{target_word}”对应的音符之间有原唱停顿，请调整边界后再生成。')
         # Use the following source syllable's note for the English coda when
         # a long silent slot follows it. Then move that syllable into the gap.
@@ -166,9 +209,9 @@ def map_target_notes(original, replacement, note_words, durations, pitches, type
         available_gap = (following is not None and following == events[-1] + 1 and rest_slot < len(note_words)
                          and note_words[rest_slot] == '<SP>' and float(durations[rest_slot]) >= .02
                          and not re.fullmatch(r"[A-Za-z]+(?:'[A-Za-z]+)*", target_words[following]))
-        if policy == 'move' and not available_gap:
+        if not manual and policy == 'move' and not available_gap:
             raise ValueError(f'英文词“{target_word}”后没有可借用的相邻空档，请调整原词或选择保持原位置。')
-        move_next = available_gap and (policy == 'move' or policy == 'auto' and len(grouped_sources) >= 2 and float(durations[rest_slot]) >= .25)
+        move_next = not manual and available_gap and (policy == 'move' or policy == 'auto' and len(grouped_sources) >= 2 and float(durations[rest_slot]) >= .25)
         if move_next:
             moved_lyric = (target_words[following], target_phonemes[following], target_pitches[following])
             events.append(following)
@@ -181,7 +224,7 @@ def map_target_notes(original, replacement, note_words, durations, pitches, type
             if len(control['slots']) != len(events):
                 raise ValueError(f'英文词“{target_word}”实际占用 {len(events)} 个 MIDI 音符，填写了 {len(control["slots"])} 个音素槽位，请调整。')
             chunks = [slot.split('-') for slot in control['slots']]
-            affected.update(grouped_sources)
+            affected.update(source for i in events if (source := event_sources[i]) is not None)
         elif (len(events) == 3 and vowel_index is not None and vowel_index > 0
                 and len(phones) - vowel_index - 1 == 2):
             # Keep the English onset and vowel together, then give each coda
@@ -205,7 +248,8 @@ def map_target_notes(original, replacement, note_words, durations, pitches, type
             # Keep genuine source-note attacks (type 2). Only preserve type 3
             # where the source itself was a slur; otherwise coda onsets such as
             # /s/ get suppressed by treating them as a held vowel.
-            target_types[event_index] = int(types[event_index])
+            if not manual:
+                target_types[event_index] = int(types[event_index])
         if moved_lyric:
             target_words[rest_slot], target_phonemes[rest_slot] = moved_lyric[0], moved_lyric[1]
             target_types[rest_slot] = 2
@@ -271,8 +315,10 @@ def mask_changed_reference(prompt, original, replacement, waveform, sr, force=Fa
     before = units(original)
     try: changed = set(changed_source_units(original, replacement)) | set(affected_source_indices or [])
     except ValueError:
-        if force: raise
-        return None
+        if affected_source_indices is None:
+            if force: raise
+            return None
+        changed = set(affected_source_indices)
     if not changed or len(changed) == len(before):
         if force: raise ValueError('没有可用的独立音色参考句；请导入包含其他唱句的歌词和原唱。')
         return None
@@ -325,13 +371,15 @@ def run(config):
     prepared = []
     hfa, qwen = None, None
     timing_results = []
-    if config.get('hfa'):
+    saved_alignments = config.get('saved_alignments', {})
+    if config.get('hfa') and any(not saved_alignments.get(line['id']) for line in analysis_segments):
         try:
             from backend.hfa import HfaAligner
             hfa = HfaAligner(config['hfa'])
         except Exception as exc:
             report('alignment_warning', message='歌声对齐组件不可用，改用备用对齐：' + str(exc))
     for position, line in enumerate(analysis_segments, 1):
+        report('alignment', segment_id=line['id'], position=position, total=len(analysis_segments))
         crop = audio[round(line['start'] * sr):round(line['end'] * sr)]
         if len(crop) < round(sr * .12)-1 or np.max(np.abs(crop)) < .001:
             raise ValueError('当前句音频过短或接近静音，请调整边界。')
@@ -381,6 +429,7 @@ def run(config):
     extractor = F0Extractor(str(models / 'SoulX-Singer-Preprocess/rmvpe/rmvpe.pt'), device=device, verbose=False)
     f0s = []
     for line, path, crop, words, spans, indices in prepared:
+        report('pitch', segment_id=line['id'])
         f0 = extractor.process(str(path), verbose=False)
         if np.mean(f0 > 0) < .05:
             raise ValueError('音频中未检测到足够的演唱音高，请导入清晰的原唱干声。')
@@ -395,6 +444,7 @@ def run(config):
     from preprocess.tools.g2p import g2p_transform
     metadata = []
     for position, ((line, path, crop, words, spans, indices), f0) in enumerate(zip(prepared, f0s),1):
+        report('notes', segment_id=line['id'], position=position, total=len(prepared))
         item = dict(item_name=line['id'], wav_fn=str(path), origin_wav_fn=str(path), words=words, word_durs=spans, language='Mandarin')
         notes = transcriber.process(item, apply_rwbd=False, verbose=False)
         note_words, durations = notes['note_text'], notes['note_dur']
@@ -404,24 +454,39 @@ def run(config):
         note_words,durations,pitches,types,timing_repaired = reconcile_note_timing(words,spans,note_words,durations,pitches,types)
         if timing_repaired and line['id'] in target_ids:
             report('alignment_warning',message=f'第 {position} 个处理片段的音符已按逐字时间校正，请试听。')
-        if line['mode']=='score':
+        analyzing = config.get('operation') == 'notes'
+        if line['mode']=='score' or analyzing:
             pitches,repaired=repair_score_pitches(pitches,types,durations,f0)
             if repaired and line['id'] in target_ids:
                 report('pitch_warning',message=f'第 {position} 个处理片段有 {repaired} 个无效 MIDI 音高，已参考原唱音高或邻近音符修复，请试听。')
+        if analyzing:
+            scale = (len(crop) / sr) / sum(durations)
+            prompt = {'text': ' '.join(note_words), 'duration': ' '.join(f'{d*scale:.6f}' for d in durations),
+                      'note_type': ' '.join(map(str, types)), 'note_pitch': ' '.join(map(str, pitches))}
+            (jobdir / (line['id'] + '-metadata.json')).write_text(json.dumps({'prompt': prompt}), encoding='utf-8')
+            continue
         target_words, target_phonemes, target_types, target_pitches, target_f0, target_durations, affected = map_target_notes(
             line['original'], line['text'], note_words, durations, pitches, types, f0, line['mode'],
-            line.get('midi_slots') if line['id'] in target_ids else None)
+            line.get('midi_slots') if line['id'] in target_ids else None,
+            (line.get('midi_note_edits') or {}).get('assignment') if line['id'] in target_ids else None)
         total = len(crop) / sr
         note_total = sum(durations)
         if not note_total or abs(note_total - total) > .25:
             raise ValueError('音符总时长与片段时长不一致，请调整边界。')
         durations = [float(d) * total / note_total for d in durations]
         target_durations = [float(d) * total / note_total for d in target_durations]
-        if line['mode'] == 'score' and line.get('midi_note_edits'):
+        if line['id'] in target_ids and line['mode'] == 'score' and line.get('midi_note_edits'):
             from backend.midi_slots import apply_midi_note_edits
             target_durations, target_pitches = apply_midi_note_edits(
                 line['midi_note_edits'], line, Path(config['source']).name, note_words, durations, types,
                 target_words, target_durations, target_pitches)
+            source_unit = -1
+            affected = set(affected)
+            for word, kind, source_pitch, target_pitch in zip(note_words, types, pitches, target_pitches):
+                if word != '<SP>' and int(kind) == 2:
+                    source_unit += 1
+                if word != '<SP>' and source_pitch != target_pitch:
+                    affected.add(source_unit)
             affected = expand_reference_mask_for_note_edits(note_words, types, durations, target_durations, affected)
         prompt = dict(index=line['id'], language='Mandarin', time=[0, round(total * 1000)],
                       duration=' '.join(f'{d:.6f}' for d in durations), text=' '.join(note_words),
@@ -437,6 +502,9 @@ def run(config):
     del transcriber
     clear_gpu()
 
+    if config.get('operation') == 'notes':
+        report('complete', count=len(prepared))
+        return
     report('loading_singer')
     adapt_llama()
     from cli.inference import build_model
@@ -479,6 +547,7 @@ def run(config):
         output = jobdir / (line['id'] + '-generated.wav')
         sf.write(output, generated, sr, subtype='PCM_16')
         outputs.append({'segment_id': line['id'], 'path': str(output), 'sample_rate': sr, 'frames': required, 'reference_safe': True, 'generation_params':parameters, 'seed_used':seed_used})
+        report('generating', completed=len(outputs))
     if any(line.get('restore') for line,_,_,_,_ in metadata):
         import shutil
         from backend.svc_worker import run as convert_voice

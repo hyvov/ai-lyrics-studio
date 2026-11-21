@@ -57,9 +57,9 @@ class RenderJobs:
             issue = source_issue(p, self.assets)
             if issue:
                 raise ValueError(issue)
-            if kind not in ('render','align'):
+            if kind not in ('render','align','notes'):
                 raise ValueError('无效任务类型。')
-            selected = (validate_alignment if kind == 'align' else validate_render)(p, segment_ids)
+            selected = (validate_render if kind == 'render' else validate_alignment)(p, segment_ids)
             self.runtime.require()
             ying = None
             if kind == 'render' and any(line.get('mode') == 'ying' for line in selected):
@@ -84,7 +84,7 @@ class RenderJobs:
             config = {'core': str(self.runtime.core), 'models': str(self.runtime.models), 'job_dir': str(directory.resolve()),
                       'source': str((self.assets / p['assets']['source']['id']).resolve()), 'segments': selected,
                       'existing_takes': [], 'hfa': self.runtime.hfa_config(), 'operation':kind,
-                      'saved_alignments':{x['id']:cached_alignment(p,x) for x in selected if kind == 'render' and cached_alignment(p,x)},
+                      'saved_alignments':{x['id']:cached_alignment(p,x) for x in selected if kind != 'align' and cached_alignment(p,x)},
                       'svc':svc_config}
             if ying: config['ying'] = ying
             if kind == 'render' and not ying:
@@ -227,6 +227,7 @@ class RenderJobs:
     def _run(self, job, snapshot):
         directory = self.root / job['id']
         error = None
+        segment_id = None
         try:
             env = {**os.environ, 'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1', 'HF_HUB_OFFLINE': '1', 'TRANSFORMERS_OFFLINE': '1', 'PYTHONDONTWRITEBYTECODE': '1', 'NLTK_DATA': str(self.runtime.python.parent / 'nltk_data')}
             flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
@@ -248,16 +249,21 @@ class RenderJobs:
                         value = json.loads(line[len('STUDIO_EVENT '):])
                         if value['stage'] == 'failed':
                             error = value.get('error')
+                        elif value['stage'] not in ('alignment_warning', 'pitch_warning'):
+                            segment_id = value.get('segment_id')
                         if value['stage'] in ('alignment_warning','pitch_warning'):
                             with self.lock:
                                 job['warnings'].append(value['message'])
                         if job['status'] != 'cancelled':
-                            self._set(job, stage=value['stage'], position=value.get('position'), total=value.get('total'))
+                            progress = {'completed': value['completed']} if 'completed' in value else {}
+                            self._set(job, stage=value['stage'], position=value.get('position'), total=value.get('total'), **progress)
             code = process.wait()
             with self.lock:
                 if job['status'] == 'cancelled':
                     return
                 if code:
+                    if segment_id:
+                        job['error_segment_id'] = segment_id
                     raise RuntimeError(error or '模型进程异常退出，请检查任务日志或显存占用。')
                 if job.get('kind') == 'separate':
                     self._publish_separation(job, snapshot, directory)
@@ -267,6 +273,8 @@ class RenderJobs:
                     self._publish_svc(job,snapshot,directory)
                 elif job.get('kind') == 'compose':
                     self._publish_compose(job,snapshot,directory)
+                elif job.get('kind') == 'notes':
+                    self._publish_alignment(job, snapshot, directory, final=False)
                 elif job.get('kind') == 'align':
                     self._publish_alignment(job, snapshot, directory, final=True)
                 else:
@@ -376,7 +384,7 @@ class RenderJobs:
     def _publish_alignment(self, job, snapshot, directory, final):
         path = directory / 'alignment-result.json'
         if not path.is_file():
-            if final:
+            if final or job['kind'] == 'notes':
                 raise ValueError('对齐任务未产生时间轴。')
             return
         results = json.loads(path.read_text(encoding='utf-8'))
@@ -396,6 +404,8 @@ class RenderJobs:
                     continue
                 current.setdefault('alignments',{})[key] = {'fingerprint':alignment_fingerprint(current,lines[key]),
                     'engine':result['engine'],'unit_timings':timing}
+                if job['kind'] == 'notes':
+                    current['alignments'][key]['note_job'] = job['id']
                 if final:
                     current.get('renders',{}).pop(key,None)
                 accepted += 1
@@ -404,7 +414,7 @@ class RenderJobs:
                     current.pop('composite',None)
                 current['revision'] += 1
                 self.store._write(current)
-            if final:
+            if final or job['kind'] == 'notes':
                 self._set(job,status='succeeded' if accepted else 'stale',stage='complete',accepted=accepted,
                           error=None if accepted else '原词或边界已修改，旧对齐结果未覆盖。')
 

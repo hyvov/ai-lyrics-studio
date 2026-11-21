@@ -46,7 +46,8 @@ def validate_midi_note_edits(value, line):
     """Validate edited note boundaries against the source analysis they came from."""
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != {'source_id', 'original', 'start', 'end', 'events'}:
+    required = {'source_id', 'original', 'start', 'end', 'events'}
+    if not isinstance(value, dict) or set(value) not in (required, required | {'lyrics', 'assignment'}):
         raise ValueError('MIDI 音符编辑格式无效。')
     source_id = value['source_id']
     if not isinstance(source_id, str) or not re.fullmatch(r'[a-f0-9]{32}\.(?:wav|mp3|flac|m4a|ogg|aac|opus|webm)', source_id, re.I):
@@ -74,7 +75,31 @@ def validate_midi_note_edits(value, line):
         previous = float(end)
     if abs(previous - line['end']) > .001:
         raise ValueError('最后一个 MIDI 音符必须结束在当前句末尾。')
-    return {'source_id':source_id, 'original':line['original'], 'start':line['start'], 'end':line['end'], 'events':result}
+    normalized = {'source_id':source_id, 'original':line['original'], 'start':line['start'], 'end':line['end'], 'events':result}
+    if 'assignment' in value:
+        from backend.singing import units
+        words = units(line['text'])
+        assignment = value['assignment']
+        if value['lyrics'] != line['text'] or not isinstance(assignment, list) or len(assignment) != len(events):
+            raise ValueError('歌词已改变，请重新分配 MIDI 槽位。')
+        previous_word = -1
+        for i, target in enumerate(assignment):
+            if target is None:
+                if result[i]['pitch'] is not None:
+                    raise ValueError('空拍不能指定音高。')
+                continue
+            if type(target) is not int or not 0 <= target < len(words) or target not in (previous_word, previous_word + 1):
+                raise ValueError('请按新词顺序分配音符，每个字词至少占一个槽位。')
+            if target == previous_word and assignment[i-1] is None:
+                raise ValueError('同一个字词的音符须连续。')
+            previous_word = target
+        if previous_word != len(words) - 1:
+            raise ValueError('还有新词未分配音符。')
+        for control in line.get('midi_slots') or []:
+            if control['slots'] and len(control['slots']) != assignment.count(control['index']):
+                raise ValueError(f'请为 {control["word"]} 的每个音符填写一组音素，或留空自动分配。')
+        normalized.update(lyrics=line['text'], assignment=assignment)
+    return normalized
 
 
 def apply_midi_note_edits(value, line, source_id, words, durations, types, target_words, target_durations, target_pitches):

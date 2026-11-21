@@ -17,7 +17,7 @@ from backend.jobs import RenderJobs
 from backend.model_setup import ModelSetup
 from backend.updater import Updater
 from backend.media import source_issue,waveform
-from backend.singing import fingerprint, composition_fingerprint, svc_fingerprint, units
+from backend.singing import LineValidationError, fingerprint, composition_fingerprint, svc_fingerprint, units
 from backend.timeline import alignment_fingerprint, cached_alignment, validate_timings
 from backend.phrases import split_phrase, merge_next
 from contextlib import asynccontextmanager
@@ -60,6 +60,11 @@ def create_app(data_root: Path | None = None) -> FastAPI:
                 line['render_warning'] = '旧版参考音频可能导致原词残留，请重新生成。'
         composite = p.get('composite', {})
         p['rendered_available'] = bool(composite.get('rendered') and composite.get('fingerprint') == composition_fingerprint(p))
+        import re
+        preview_id = composite.get('rendered', '')
+        p['rendered_preview_available'] = bool(re.fullmatch(r'[a-f0-9]{32}\.wav', preview_id)
+            and (assets / preview_id).is_file())
+        p['rendered_preview_stale'] = bool(p['rendered_preview_available'] and not p['rendered_available'])
         svc=p.get('svc',{})
         p['svc_available'] = bool(svc.get('asset_id') and svc.get('target_kind') in ('source','rendered')
             and svc.get('fingerprint')==svc_fingerprint(p,svc['target_kind'])
@@ -83,7 +88,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             if not secrets.compare_digest(supplied, token):
                 return JSONResponse({'error': '会话已失效，请刷新页面。'}, 403)
             if (request.method == 'POST' and request.url.path.startswith('/api/projects/')
-                    and request.url.path.rsplit('/', 1)[-1] in ('renders', 'alignments', 'separation', 'transcription', 'svc', 'compose')
+                    and request.url.path.rsplit('/', 1)[-1] in ('renders', 'alignments', 'note-analyses', 'separation', 'transcription', 'svc', 'compose')
                     and model_setup.snapshot()['status'] == 'running'):
                 return JSONResponse({'error': '正在安装或校验组件，请完成或暂停下载后再运行模型任务。'}, 409)
         response = await call_next(request)
@@ -96,7 +101,10 @@ def create_app(data_root: Path | None = None) -> FastAPI:
 
     @app.exception_handler(ValueError)
     async def invalid(_, exc):
-        return JSONResponse({'error': str(exc)}, 400)
+        payload = {'error': str(exc)}
+        if isinstance(exc, LineValidationError):
+            payload['issues'] = exc.issues
+        return JSONResponse(payload, 400)
 
     @app.exception_handler(FileNotFoundError)
     async def missing(_, exc):
@@ -177,6 +185,56 @@ def create_app(data_root: Path | None = None) -> FastAPI:
                 raise Conflict('当前工程正在处理模型任务，完成后才能删除。')
             return store.delete(project_id, assets)
 
+    @app.get('/api/generation-defaults')
+    def get_generation_defaults():
+        path = data / 'generation-defaults.json'
+        return json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
+
+    @app.put('/api/generation-defaults')
+    async def set_generation_defaults(request: Request):
+        from backend.generation_params import generation_params
+        value = await body(request)
+        mode = value.get('mode')
+        params = generation_params(mode, value.get('parameters'))
+        with store.lock:
+            settings = get_generation_defaults()
+            settings[mode] = params
+            path = data / 'generation-defaults.json'
+            temporary = path.with_suffix('.tmp')
+            temporary.write_text(json.dumps(settings), encoding='utf-8')
+            os.replace(temporary, path)
+        return settings
+
+    @app.post('/api/projects/{project_id}/generation-parameters')
+    async def apply_generation_parameters(project_id: str, request: Request):
+        from backend.generation_params import generation_params
+        value = await body(request)
+        with store.lock:
+            p = store.get(project_id)
+            if value.get('revision') != p['revision']:
+                raise Conflict('工程已更新，请重新打开参数面板。')
+            mode, scope = value.get('mode'), value.get('scope')
+            params = generation_params(mode, value.get('parameters'))
+            if scope not in ('pending','all','missing'):
+                raise ValueError('请选择参数应用范围。')
+            ids = value.get('segment_ids')
+            if ids is not None and (not isinstance(ids,list) or any(not isinstance(x,str) for x in ids)):
+                raise ValueError('歌词片段无效。')
+            count = 0
+            for line in p['lines']:
+                if ids is not None and line['id'] not in ids:
+                    continue
+                take = p.get('renders', {}).get(line['id'])
+                ready = take and take['fingerprint'] == fingerprint(p, line)
+                if line['mode'] != mode or (scope == 'missing' and line.get('generation_params')):
+                    continue
+                if scope == 'pending' and (ready or line['text'] == line['original'] and not line.get('midi_note_edits') and not line.get('midi_slots')):
+                    continue
+                line['generation_params'] = params.copy()
+                count += 1
+            updated = store.update(project_id,p) if count else p
+            return {'project':view(updated),'count':count}
+
     @app.put('/api/projects/{project_id}')
     async def update(project_id: str, request: Request):
         return view(store.update(project_id, await body(request)))
@@ -189,6 +247,31 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             raise ValueError('请提供 SRT 或 LRC 文本。')
         lines = parse_lyrics(value['text'], p['duration'], value.get('format'))
         return view(store.replace_lyrics(project_id,value.get('revision'),lines,'导入字幕或歌词前'))
+
+    @app.post('/api/projects/{project_id}/adapted-lyrics')
+    async def adapted_lyrics(project_id: str, request: Request):
+        value = await body(request)
+        p = store.get(project_id)
+        lines = p['lines']
+        if not lines:
+            raise ValueError('请先导入原歌词。')
+        text, fmt = value.get('text'), value.get('format')
+        if not isinstance(text, str) or fmt not in ('txt', 'srt', 'lrc'):
+            raise ValueError('请选择 TXT、SRT 或 LRC 改编歌词文件。')
+        if fmt == 'txt':
+            words = [row.strip() for row in text.lstrip('﻿').splitlines() if row.strip()]
+        else:
+            # Subtitle times order the replacement cues independently of the source recording.
+            words = [cue['text'] for cue in parse_lyrics(text, 3600000, fmt)]
+        if len(words) != len(lines):
+            raise ValueError(f'原歌词有 {len(lines)} 句，改编歌词有 {len(words)} 句。请按原句分行后再导入。')
+        for line, replacement in zip(lines, words):
+            if line['text'] != replacement:
+                line['text'] = replacement
+                line.pop('midi_slots', None)
+                if 'assignment' in (line.get('midi_note_edits') or {}):
+                    line.pop('midi_note_edits', None)
+        return view(store.replace_lyrics(project_id, value.get('revision'), lines, '导入改编歌词前'))
 
     @app.get('/api/projects/{project_id}/lyric-history')
     def lyric_history(project_id: str):
@@ -285,6 +368,11 @@ def create_app(data_root: Path | None = None) -> FastAPI:
         value = await body(request)
         return jobs.submit(project_id,value.get('revision'),value.get('segment_ids'),kind='align')
 
+    @app.post('/api/projects/{project_id}/note-analyses', status_code=202)
+    async def analyze_notes(project_id: str, request: Request):
+        value = await body(request)
+        return jobs.submit(project_id, value.get('revision'), value.get('segment_ids'), kind='notes')
+
     @app.post('/api/projects/{project_id}/separation', status_code=202)
     async def separate_song(project_id: str, request: Request):
         value = await body(request)
@@ -347,8 +435,18 @@ def create_app(data_root: Path | None = None) -> FastAPI:
                 line.pop('midi_slots', None)
             if 'midi_note_edits' in value:
                 line['midi_note_edits'] = value['midi_note_edits']
-            elif (start, end) != old_bounds:
+            elif (start, end) != old_bounds or (line['text'] != old_text and 'assignment' in (line.get('midi_note_edits') or {})):
                 line.pop('midi_note_edits', None)
+            if 'unit_timings' in value:
+                timings = validate_timings(line, value['unit_timings'])
+                line.pop('midi_note_edits', None)
+                validate_project(p)
+                p.setdefault('alignments', {})[segment_id] = {
+                    'fingerprint': alignment_fingerprint(p, line),
+                    'engine': 'manual', 'unit_timings': timings,
+                }
+                p['revision'] += 1
+                return view(store._write(p))
             return view(store.update(project_id, p))
 
     @app.post('/api/projects/{project_id}/segments/{segment_id}/structure')
@@ -375,7 +473,11 @@ def create_app(data_root: Path | None = None) -> FastAPI:
         if line is None:
             raise FileNotFoundError()
         source = p.get('assets', {}).get('source', {}).get('id')
-        for take in reversed(p.get('render_history', [])):
+        alignment = cached_alignment(p, line) or {}
+        candidates = list(reversed(p.get('render_history', [])))
+        if alignment.get('note_job'):
+            candidates.insert(0, {**line, 'segment_id': segment_id, 'job_id': alignment['note_job']})
+        for take in candidates:
             job_id = take.get('job_id', '')
             if (take.get('segment_id') != segment_id or take.get('original') != line['original']
                     or take.get('start') != line['start'] or take.get('end') != line['end']
@@ -386,6 +488,10 @@ def create_app(data_root: Path | None = None) -> FastAPI:
                 config = json.loads((directory / 'input.json').read_text(encoding='utf-8'))
                 if not source or Path(config['source']).name != source:
                     continue
+                if alignment.get('engine') == 'manual' and take['job_id'] != alignment.get('note_job'):
+                    used = config.get('saved_alignments', {}).get(segment_id) or {}
+                    if used.get('unit_timings') != alignment['unit_timings']:
+                        continue
                 prompt = json.loads((directory / (segment_id + '-metadata.json')).read_text(encoding='utf-8'))['prompt']
                 words = prompt['text'].split()
                 durations = [float(x) for x in prompt['duration'].split()]

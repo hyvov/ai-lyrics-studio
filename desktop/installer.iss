@@ -1,4 +1,4 @@
-#define AppVersion "0.2.3"
+#define AppVersion "0.2.5"
 #define AppName "FunnySinger"
 #ifndef Payload
   #define Payload "..\build\release"
@@ -23,6 +23,7 @@ OutputBaseFilename=FunnySinger-{#AppVersion}-setup
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
+DisableDirPage=no
 DisableProgramGroupPage=yes
 SetupIconFile=app.ico
 UninstallDisplayIcon={app}\FunnySinger.exe
@@ -50,6 +51,44 @@ Filename: "{app}\support\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /
 Filename: "{app}\FunnySinger.exe"; Description: "打开FunnySinger，选择需要的模型"; Flags: nowait postinstall skipifsilent
 
 [Code]
+var StoragePage: TInputDirWizardPage;
+
+procedure InitializeWizard;
+var PreviousPath: String;
+begin
+  StoragePage := CreateInputDirPage(wpSelectDir, '选择数据保存位置',
+    '工程和模型保存在哪里？',
+    '选择一个用于保存工程、音频、模型和下载组件的文件夹。升级时请继续使用原位置；选择新位置不会移动原有数据。', False, '');
+  StoragePage.Add('数据文件夹：');
+  PreviousPath := GetPreviousData('DataRoot', ExpandConstant('{localappdata}\CiShengStudio'));
+  StoragePage.Values[0] := PreviousPath;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var AppPath, DataPath: String;
+begin
+  Result := True;
+  if CurPageID = StoragePage.ID then begin
+    AppPath := AddBackslash(ExpandFileName(WizardDirValue));
+    DataPath := AddBackslash(ExpandFileName(StoragePage.Values[0]));
+    if (Trim(StoragePage.Values[0]) = '') or (CompareText(Copy(DataPath, 1, Length(AppPath)), AppPath) = 0) then begin
+      MsgBox('请选择程序安装目录以外的数据文件夹，以便卸载时保留工程和模型。', mbError, MB_OK);
+      Result := False;
+    end;
+  end;
+end;
+
+procedure RegisterPreviousData(PreviousDataKey: Integer);
+begin
+  SetPreviousData(PreviousDataKey, 'DataRoot', ExpandFileName(StoragePage.Values[0]));
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    SetIniString('Storage', 'Home', ExpandFileName(StoragePage.Values[0]), ExpandConstant('{app}\storage.ini'));
+end;
+
 function NeedsWebView: Boolean;
 var Version: String;
 begin

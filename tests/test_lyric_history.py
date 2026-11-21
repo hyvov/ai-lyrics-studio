@@ -31,6 +31,23 @@ class LyricHistoryTests(unittest.TestCase):
             self.assertEqual(c.get(base+'/lyric-history').json()['history'][0]['preview'],'再见')
             self.assertEqual(c.post(base+'/lyric-history/'+history[0]['id']+'/restore',headers=auth,json={'revision':1}).status_code,409)
 
+    def test_import_adaptation_preserves_source_and_rejects_partial_match(self):
+        with TestClient(create_app(self.root), base_url='http://127.0.0.1:18733') as client:
+            auth = {'x-studio-token':client.get('/api/session').json()['token']}
+            path = f"/api/projects/{self.p['id']}/adapted-lyrics"
+            def submit(revision, fmt, text):
+                return client.post(path, headers=auth, json=dict(revision=revision, format=fmt, text=text))
+            self.assertEqual(submit(1,'txt','第一句\n第二句').status_code,400)
+            self.assertEqual(self.store.get(self.p['id']),self.p)
+            for revision, (fmt, text) in enumerate([('txt','春风'), ('lrc','[00:08.00]晚风'),
+                                                    ('srt','1\n00:00:08,000 --> 00:00:10,000\n清风')],1):
+                response = submit(revision,fmt,text)
+                self.assertEqual(response.status_code,200,response.text)
+                line = response.json()['lines'][0]
+                self.assertEqual((line['id'],line['original'],line['start'],line['end']),('a','你好',0,3))
+                self.assertEqual(line['text'],text[-2:])
+            self.assertEqual(self.store.get(self.p['id'])['lyric_history'][0]['lines'][0]['text'],'你早')
+
     def test_cannot_restore_history_to_changed_source(self):
         self.store.replace_lyrics(self.p['id'],1,[{**self.p['lines'][0],'text':'再见'}],'测试')
         p=self.store.get(self.p['id']);snapshot=p['lyric_history'][0]['id'];p['assets']['source']['id']='other.wav';self.store._write(p)

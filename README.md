@@ -117,7 +117,7 @@ SRT/LRC 导入支持 UTF-8、带 BOM 的 UTF-16 和常见 GBK/GB18030 编码，�
 
 ## Windows 客户端与安装包
 
-交付文件为 `dist/FunnySinger-0.2.3-setup.exe`。安装包自带独立 Python、FFmpeg、界面、推理代码及较小依赖，不需要先安装 SoulX Studio 或系统 Python。
+交付文件为 `dist/FunnySinger-0.2.5-setup.exe`。安装包自带独立 Python、FFmpeg、界面、推理代码及较小依赖，不需要先安装 SoulX Studio 或系统 Python。
 
 首次启动的“模型与组件”可选择歌声生成、人声分离、自动识词及 SVC。共享 GPU 大组件自动安装一次；模型从固定的官方版本下载、续传并核对 SHA-256。可以跳过下载，先创建工程、导入音频和字幕、播放、编辑时间轴及导出字幕。
 

@@ -216,3 +216,96 @@ body[data-theme] .timeline-word-editor .wave-region,body[data-theme] .svc-compon
 .brand img.logo{object-fit:cover;background:transparent;border-radius:12px;flex-shrink:0}
 
 .update-dialog{width:min(480px,calc(100vw - 32px))}.update-body{padding:22px}.update-body progress{width:100%;margin-top:15px;accent-color:var(--accent)}.update-body strong{font-size:14px;overflow-wrap:anywhere}.update-body p{line-height:1.7}
+
+.timeline-format{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:10px}.timeline-format-options{display:flex;gap:2px;padding:3px;background:var(--bg);border:1px solid var(--border);border-radius:10px}.timeline-header-actions .timeline-format-options button{padding:7px 10px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:11px}.timeline-header-actions .timeline-format-options button[aria-pressed=true]{background:var(--surface);color:var(--accent);font-weight:700;box-shadow:0 1px 4px #0002}.timeline-fixed{position:sticky;top:-12px;z-index:6;margin:-12px -18px 0;padding:12px 18px 10px;background:var(--surface);border-bottom:1px solid var(--border)}.timeline-fixed .timeline-actions{padding-bottom:0}
+.project-name{
+  font-family:Georgia,"Noto Serif SC","Songti SC",SimSun,serif;
+  font-size:32px;
+  font-weight:400;
+  font-style:italic;
+  font-synthesis:none;
+  line-height:1.2;
+  color:var(--ink);
+  padding-inline-end:.12em;
+  max-width:200px;
+}
+@media(max-width:800px){.timeline-fixed{top:-12px;margin:-12px -12px 0;padding:12px}.timeline-format>span{display:none}.timeline-header-actions .timeline-format-options button{padding:7px}.project-name{display:block;max-width:100px;font-size:24px}}
+
+.midi-analysis-bar,.midi-inspector{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}
+.midi-analysis-bar{justify-content:space-between;color:var(--muted);font-size:12px}
+.midi-roll-scroll{max-height:340px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--border);border-radius:9px;background:var(--surface)}
+.midi-ruler{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;padding:5px 5px 5px 43px;background:var(--surface);border-bottom:1px solid var(--border);color:var(--muted);font:11px/16px Consolas,monospace}
+.midi-sheet{display:grid;grid-template-columns:42px 1fr}
+.midi-keys{position:sticky;left:0;z-index:1;background:var(--surface);border-right:1px solid var(--border)}
+.midi-keys span{display:block;height:22px;padding-right:5px;border-bottom:1px solid var(--border);text-align:right;font:10px/22px Consolas,monospace;color:var(--muted)}
+.midi-plane{position:relative;height:calc(var(--midi-rows)*22px);background-image:linear-gradient(to bottom,transparent 21px,var(--border) 21px),linear-gradient(to right,var(--border) 1px,transparent 1px);background-size:100% 22px,12.5% 100%}
+.midi-plane .roll-note{position:absolute;height:20px;min-width:0;touch-action:none;user-select:none;overflow:hidden;text-align:left;border-radius:4px;border:1px solid var(--accent);background:var(--tint);color:var(--ink);padding:0 4px;line-height:16px;cursor:move}
+.roll-note span{display:block;overflow:hidden;text-overflow:ellipsis}
+.midi-plane .roll-rest{border-style:dashed;background:var(--surface);color:var(--muted)}
+.midi-plane .roll-note[aria-pressed=true]{outline:2px solid var(--accent);outline-offset:-2px;font-weight:700}
+.roll-note i{position:absolute;top:0;bottom:0;width:min(7px,23%);cursor:ew-resize}
+.roll-note i[data-edge=start]{left:0}.roll-note i[data-edge=end]{right:0}
+.roll-note:hover i,.roll-note[aria-pressed=true] i{background:color-mix(in srgb,var(--accent) 45%,transparent)}
+.midi-inspector{align-items:end}.midi-inspector strong{align-self:center;font-size:12px;margin-right:auto}
+.midi-inspector label{display:grid;gap:4px;font-size:11px;color:var(--muted)}
+.midi-inspector input{width:96px}.midi-inspector select{max-width:160px}.midi-inspector button{min-height:36px}
+
+#renderErrors{width:min(620px,92vw);padding:0}
+#renderErrors h2{margin:0}
+#renderErrorList{max-height:62vh;overflow:auto;padding:14px 20px;overflow-wrap:anywhere}
+#renderErrorList section+section{margin-top:14px;padding-top:14px;border-top:1px solid var(--border)}
+#renderErrorList p{margin:6px 0;white-space:pre-wrap}
+
+.parameter-actions{display:flex;flex-wrap:wrap;gap:8px}
+
+#regenerateAll{padding:8px 12px;font-size:12px}
+
+footer .render-actions{
+  flex:0 0 240px;
+  width:240px;
+  min-width:0;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+  grid-template-rows:30px 30px 34px;
+  gap:6px;
+  align-content:center;
+}
+.render-actions #versions,.render-actions #startSvc{grid-column:1/-1}
+.render-actions #versions{min-height:0}
+.render-actions #versions button{flex:1;min-width:0;padding:4px 8px}
+.render-actions>#batch,.render-actions>#regenerateAll{min-width:0;padding:6px 8px;font-size:11px}
+.render-actions>#startSvc{padding:4px 8px;font-size:11px}
+@media(max-width:800px){
+  footer .render-actions{flex-basis:210px;width:210px}
+}
+@media(max-width:520px){
+  footer .render-actions{flex-basis:190px;width:190px}
+  .render-actions>#batch,.render-actions>#regenerateAll{font-size:10px;padding:5px 3px}
+}
+
+#jobPanel > div{flex:1;min-width:0}
+#jobProgress:not([hidden]){display:block;width:100%;height:8px;margin-top:8px;accent-color:var(--accent)}
+
+#jobPanel.render-progress{
+  position:relative;
+  isolation:isolate;
+  overflow:hidden;
+  background:color-mix(in srgb,#35a6d0 16%,var(--surface));
+}
+#jobPanel.render-progress::before{
+  content:"";
+  position:absolute;
+  z-index:-1;
+  inset:0 auto 0 0;
+  width:var(--render-done,0%);
+  background-color:color-mix(in srgb,#ed785f 32%,var(--surface));
+  background-image:repeating-linear-gradient(120deg,transparent 0 13px,#fff2 13px 20px,transparent 20px 26px);
+  background-size:30px 100%;
+  animation:render-fill-motion 1.4s linear infinite;
+  transition:width .35s ease;
+}
+@keyframes render-fill-motion{to{background-position:30px 0}}
+#jobPanel #jobProgress{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);margin:0}
+@media(prefers-reduced-motion:reduce){
+  #jobPanel.render-progress::before{animation:none;transition:none}
+}

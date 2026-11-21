@@ -12,7 +12,7 @@ def units(text):
     found = re.findall(r"[\u4e00-\u9fff]|[A-Za-z]+(?:'[A-Za-z]+)*", clean)
     remaining = re.sub(r"[\u4e00-\u9fff]|[A-Za-z]+(?:'[A-Za-z]+)*|[\s，。！？、；：,.!?;:—\-…‘’“”\"()（）]", '', clean)
     if remaining:
-        raise ValueError('当前生成仅支持中文汉字、英文单词和常用标点，请将数字写成汉字。')
+        raise ValueError(f'无法识别字符“{remaining[:20]}”。请将数字写成汉字，或移除特殊符号。')
     if not found:
         raise ValueError('歌词缺少可演唱内容。')
     return found
@@ -21,6 +21,8 @@ def units(text):
 def replacement_unit_map(original, replacement):
     """Map each original lyric unit to a replacement unit, allowing many-to-one groups."""
     before, after = units(original), units(replacement)
+    if len(before) == len(after):
+        return list(range(len(before)))
     matcher = SequenceMatcher(None, [x.casefold() for x in before], [x.casefold() for x in after], autojunk=False)
     mapping = [None] * len(before)
     old_cursor = new_cursor = 0
@@ -28,7 +30,7 @@ def replacement_unit_map(original, replacement):
         old_count, new_count = block.a - old_cursor, block.b - new_cursor
         if old_count or new_count:
             if new_count < 1 or old_count < new_count:
-                raise ValueError('当前支持多个原唱字映射到一个新词；请勿增加或删除独立发音单位。')
+                raise ValueError(f'原词片段“{"".join(before[old_cursor:block.a]) or "空"}”与新词片段“{"".join(after[new_cursor:block.b]) or "空"}”无法自动对应（{old_count} → {new_count} 个发音单位）。请调整新词或手动分配 MIDI 槽位。')
             for offset in range(old_count):
                 mapping[old_cursor + offset] = new_cursor + min(new_count - 1, offset * new_count // old_count)
         for offset in range(block.size):
@@ -67,7 +69,14 @@ def potential_reference_changes(line):
     return sorted(changed)
 
 
-def validate_alignment(project, segment_ids):
+class LineValidationError(ValueError):
+    def __init__(self, issues):
+        self.issues = issues
+        first = issues[0]
+        super().__init__(f'有 {len(issues)} 句未通过校验。第 {first["number"]} 句：{first["reason"]}')
+
+
+def validate_alignment(project, segment_ids, *, for_render=False):
     if not project.get('assets', {}).get('source'):
         raise ValueError('请先导入原唱干声。')
     if not isinstance(segment_ids, list) or not segment_ids or len(segment_ids) > 100 or any(not isinstance(x,str) for x in segment_ids) or len(set(segment_ids)) != len(segment_ids):
@@ -77,23 +86,38 @@ def validate_alignment(project, segment_ids):
     selected = [x for x in project['lines'] if x['id'] in segment_ids]
     if len(selected) != len(segment_ids):
         raise ValueError('歌词片段不存在。')
+    issues = []
+    numbers = {line['id']: i for i, line in enumerate(project['lines'], 1)}
     for line in selected:
-        if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', line['id']):
-            raise ValueError('歌词片段 ID 无效。')
-        if not .12-1e-9 <= line['end']-line['start'] <= 20:
-            raise ValueError('每个片段须为 0.12–20 秒，请调整句子边界。')
-        units(line['original'])
+        try:
+            if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', line['id']):
+                raise ValueError('歌词片段 ID 无效。')
+            if not .12-1e-9 <= line['end']-line['start'] <= 20:
+                raise ValueError('每个片段须为 0.12–20 秒，请调整句子边界。')
+            units(line['original'])
+            if for_render:
+                validate_render_line(line)
+        except ValueError as exc:
+            issues.append({'segment_id':line['id'], 'number':numbers[line['id']], 'reason':str(exc)})
+    if issues:
+        raise LineValidationError(issues)
     return selected
+
+
+def validate_render_line(line):
+    if line.get('mode') == 'score' and 'assignment' in (line.get('midi_note_edits') or {}):
+        from backend.midi_slots import validate_midi_note_edits
+        validate_midi_note_edits(line['midi_note_edits'], line)
+    elif line.get('mode') != 'ying':
+        replacement_unit_map(line['original'], line['text'])
+    if line.get('restore') and line.get('mode')!='score':
+        raise ValueError('原句音色转换仅支持 MIDI 模式。')
+
 
 
 def validate_render(project, segment_ids):
-    selected = validate_alignment(project, segment_ids)
-    for line in selected:
-        if line.get('mode') != 'ying':
-            replacement_unit_map(line['original'], line['text'])
-        if line.get('restore') and line.get('mode')!='score':
-            raise ValueError('原句音色转换仅支持 MIDI 模式。')
-    return selected
+    return validate_alignment(project, segment_ids, for_render=True)
+
 
 
 def choose_reference_phrase(lines, target):

@@ -13,6 +13,24 @@ from backend.store import Store
 
 
 class SingingTests(unittest.TestCase):
+    def test_batch_reports_each_invalid_project_line(self):
+        from fastapi.testclient import TestClient
+        from backend.app import create_app
+        lines = [dict(id=str(i), original='春风', text=text, mode='score', restore=False,
+                      start=i, end=i+1) for i,text in enumerate(['晚风','春风来','雨声','雨2'])]
+        p = self.store.create({'name':'校验','duration':4,'lines':lines})
+        p['assets']['source'] = {'id':'a'*32+'.wav','duration':4}
+        self.store._write(p)
+        with TestClient(create_app(self.root),base_url='http://127.0.0.1:18733') as client, patch('backend.jobs.source_issue',return_value=None):
+            headers = {'x-studio-token':client.get('/api/session').json()['token']}
+            response = client.post(f"/api/projects/{p['id']}/renders", headers=headers,
+                                   json={'revision':p['revision'],'segment_ids':['1','3']})
+        self.assertEqual(response.status_code,400)
+        issues = response.json()['issues']
+        self.assertEqual([(i['number'],i['segment_id']) for i in issues],[(2,'1'),(4,'3')])
+        self.assertIn('来',issues[0]['reason'])
+        self.assertIn('2',issues[1]['reason'])
+
     def test_reference_avoids_nearby_similar_lyrics_and_language_mismatch(self):
         target={'id':'a','start':0,'end':4,'original':'我明白有你','text':'我明白有他'}
         similar={'id':'b','start':4,'end':8,'original':'我明白有她'}

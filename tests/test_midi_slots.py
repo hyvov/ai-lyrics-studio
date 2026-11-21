@@ -12,7 +12,7 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from backend.app import create_app
-from backend.midi_slots import validate_midi_slots, apply_midi_note_edits
+from backend.midi_slots import validate_midi_slots, validate_midi_note_edits, apply_midi_note_edits
 from backend.model_worker import map_target_notes, mask_changed_reference
 from backend.singing import fingerprint, potential_reference_changes
 from backend.store import Store, parse_lrc, parse_srt
@@ -91,6 +91,34 @@ class MidiSlotsTests(unittest.TestCase):
         original=fingerprint(project,line); line['midi_slots']=self.control
         self.assertNotEqual(original,fingerprint(project,line))
         self.assertEqual(potential_reference_changes(line), [0,1,2])
+
+    def test_manual_assignment_overrides_gap_policy_and_accepts_an_extra_lyric(self):
+        placement = [0,0,0,1,2,3]
+        controls = [{**self.control[0], 'gap_policy':'keep'}]
+        result = map_target_notes('分开的时候','rest的时候',self.words,self.durations,self.pitches,
+                                  self.types,self.f0,'score',controls,placement)
+        self.assertEqual(result[0], ['rest','rest','rest','的','时','候'])
+        self.assertEqual(result[1][:3], ['en_cont_R-EH1','en_cont_S','en_last_T'])
+        self.assertEqual(result[2][3:],[2,2,2])
+        self.assertEqual(result[3][3:], [63,65,62])
+        self.assertEqual(result[6], [0,1,2])
+        inserted = map_target_notes('分开的时候','分开的那时候',self.words,self.durations,self.pitches,
+                                    self.types,self.f0,'score',assignment=list(range(6)))
+        self.assertEqual(inserted[0], list('分开的那时候'))
+        self.assertEqual(inserted[3][3],63)
+
+    def test_manual_assignment_is_bound_to_the_lyrics_and_has_full_ordered_coverage(self):
+        line = {'original':'分开的时候','text':'rest的时候','start':0.,'end':3.4}
+        events = [{'text':w,'type':k,'source_duration':d,'end':float(end),'pitch':None}
+                  for w,k,d,end in zip(self.words,self.types,self.durations,np.cumsum(self.durations))]
+        edits = {'source_id':'a'*32+'.wav','original':line['original'],'start':0.,'end':3.4,
+                 'events':events,'lyrics':line['text'],'assignment':[0,0,0,1,2,3]}
+        self.assertEqual(validate_midi_note_edits(edits,line)['assignment'], edits['assignment'])
+        for invalid in ([0,None,0,1,2,3], [0,0,1,2,3,2], [0,0,0,None,1,2], [True,0,0,1,2,3]):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                validate_midi_note_edits({**edits,'assignment':invalid},line)
+        with self.assertRaises(ValueError):
+            validate_midi_note_edits(edits,{**line,'text':'best的时候'})
 
     def test_imported_lyrics_default_to_midi(self):
         self.assertEqual(parse_lrc('[00:00.00]你好',3)[0]['mode'],'score')

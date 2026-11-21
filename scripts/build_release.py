@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '0.2.3'
+VERSION = '0.2.5'
 SKIP_NAMES = {'.git', '__pycache__', '.pytest_cache', 'node_modules', '.soulx-verified'}
 SKIP_PACKAGES = {'torch', 'torchaudio', 'torio'}
 

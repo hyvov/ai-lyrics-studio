@@ -10,10 +10,22 @@ import zipfile
 from backend.gpu_setup import extract_wheel
 from backend.model_setup import download_models, ModelSetup, DownloadCancelled
 from backend.runtime import Runtime
-from desktop.launcher import configure_installation, python_path
+from desktop.launcher import configure_installation, python_path, installed_data_home
 
 
 class ReleaseTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Windows installation configuration')
+    def test_selected_unicode_storage_is_read_and_used(self):
+        import ctypes
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, clear=False):
+            os.environ.pop('CISHENG_USER_HOME', None)
+            root=Path(tmp)/'program';root.mkdir();(root/'release.json').write_text('{}')
+            home=Path(tmp)/'音乐数据';config=root/'storage.ini'
+            self.assertTrue(ctypes.windll.kernel32.WritePrivateProfileStringW('Storage','Home',str(home),str(config)))
+            self.assertEqual(installed_data_home(root),home.resolve())
+            self.assertEqual(configure_installation(root),home.resolve()/'data')
+            self.assertEqual(Runtime.discover().models,home.resolve()/'models')
+
     def test_installed_storage_is_outside_programs_and_does_not_use_developer_models(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, clear=False):
             root = Path(tmp) / 'program'; root.mkdir(); (root/'release.json').write_text('{}')

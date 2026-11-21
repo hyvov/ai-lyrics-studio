@@ -15,6 +15,22 @@ from urllib.request import urlopen
 PORT = 18997
 URL = f'http://127.0.0.1:{PORT}'
 
+def installed_data_home(root):
+    override = os.environ.get('CISHENG_USER_HOME')
+    if override:
+        return Path(override).resolve()
+    default = Path(os.environ['LOCALAPPDATA']) / 'CiShengStudio'
+    config = root / 'storage.ini'
+    if os.name == 'nt' and config.is_file():
+        buffer = ctypes.create_unicode_buffer(32768)
+        ctypes.windll.kernel32.GetPrivateProfileStringW('Storage', 'Home', '', buffer, len(buffer), str(config))
+        if buffer.value:
+            candidate = Path(buffer.value)
+            if not candidate.is_absolute():
+                raise ValueError('数据目录配置无效，请重新运行安装程序选择绝对路径。')
+            return candidate.resolve()
+    return default.resolve()
+
 
 def workspace():
     if getattr(sys, 'frozen', False):
@@ -27,7 +43,7 @@ def configure_installation(root):
     """Installed programs never put projects or downloaded weights in program files."""
     if not (root / 'release.json').is_file():
         return Path(os.environ.get('AI_LYRICS_DATA', root / 'data'))
-    home = Path(os.environ.get('CISHENG_USER_HOME', Path(os.environ['LOCALAPPDATA']) / 'CiShengStudio')).resolve()
+    home = installed_data_home(root)
     values = {
         'AI_LYRICS_DATA': home / 'data',
         'AI_LYRICS_RUNTIME_HOME': root / 'runtime/independent',

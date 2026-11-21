@@ -4,6 +4,7 @@ Decoder/G2P come from an independent Apache-2.0 Vocal2Midi checkout, not Studio.
 """
 from __future__ import annotations
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,7 +42,7 @@ class HfaAligner:
         self.g2p_class = DictionaryG2P
         self.dictionaries = {}
         options = ort.SessionOptions()
-        options.intra_op_num_threads = 2
+        options.intra_op_num_threads = min(6, max(1, (os.cpu_count() or 4) // 2))
         options.inter_op_num_threads = 1
         ort.disable_telemetry_events()
         self.session = ort.InferenceSession(str(self.root / 'model.onnx'), sess_options=options, providers=['CPUExecutionProvider'])

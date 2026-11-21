@@ -65,6 +65,7 @@ def run(config):
         samples=np.pad(samples[:required],(0,max(0,required-len(samples))))
         path=directory/(line['id']+'-generated.wav');sf.write(path,samples,24000,subtype='PCM_16')
         outputs.append({'segment_id':line['id'],'path':str(path),'sample_rate':24000,'frames':required,'reference_safe':True,'generation_params':parameters,'seed_used':seed_used})
+        report('generating', completed=len(outputs))
         takes.append({'start':line['start'],'end':line['end'],'path':str(path)})
     del model
     torch.cuda.empty_cache()

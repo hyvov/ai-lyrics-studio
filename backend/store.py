@@ -165,6 +165,8 @@ class Store:
             if duration is not None:
                 validate_project({**current, 'duration': duration})
                 current['duration'] = duration
+            if kind == 'source':
+                current.pop('composite', None)
             current['assets'][kind] = asset
             current['revision'] += 1
             return self._write(current)
