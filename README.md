@@ -20,8 +20,6 @@
 
 ## 启动
 
-已在 Windows、Python 3.12、RTX 5060 Ti 16 GB 环境验证。在仓库目录执行：
-
 ```powershell
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
